@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 from typing import List
+
 from demucs_audiosplit import logger
 from demucs_audiosplit.filters import apply_simple_filters, apply_yamnet_classification
 
@@ -21,10 +22,14 @@ def find_audio_files(directory: Path, extensions: List[str] = None) -> List[Path
     List[Path]
         A list of matching audio file paths.
     """
-    return [f for f in directory.iterdir() if f.suffix.lower() in extensions and f.is_file()]
+    return [
+        f for f in directory.iterdir() if f.suffix.lower() in extensions and f.is_file()
+    ]
 
 
-def run_demucs(file_path: Path, output_dir: Path, try_filter_others: bool = False) -> None:
+def run_demucs(
+    file_path: Path, output_dir: Path, try_filter_others: bool = False
+) -> None:
     """
     Run Demucs separation on a single audio file.
 
@@ -38,7 +43,7 @@ def run_demucs(file_path: Path, output_dir: Path, try_filter_others: bool = Fals
         try to apply extra filters on others.wav track
     """
     already_processed = False
-    stem_dir = output_dir  / "htdemucs" / file_path.stem
+    stem_dir = output_dir / "htdemucs" / file_path.stem
 
     # Check if all stem files already exist
     expected_stems = ["vocals.wav", "drums.wav", "bass.wav", "other.wav"]
@@ -51,8 +56,7 @@ def run_demucs(file_path: Path, output_dir: Path, try_filter_others: bool = Fals
     if not already_processed:
         try:
             subprocess.run(
-                ["demucs", "--out", str(output_dir), str(file_path)],
-                check=True
+                ["demucs", "--out", str(output_dir), str(file_path)], check=True
             )
         except subprocess.CalledProcessError as e:
             logger.info(f"❌ Failed to process {file_path.name}: {e}")
@@ -62,12 +66,13 @@ def run_demucs(file_path: Path, output_dir: Path, try_filter_others: bool = Fals
         if not all(path.exists() for path in existing):
             try:
                 # Try to filter 'other.wav' from stem output
-                stem_dir = output_dir /  "htdemucs" / file_path.stem
+                stem_dir = output_dir / "htdemucs" / file_path.stem
                 other_path = stem_dir / "other.wav"
                 apply_simple_filters(other_path)
                 apply_yamnet_classification(other_path)
             except:
-                logger.info(f"❌ Failed to perform extra extraction for  {other_path.name}: {e}")
+                logger.info(
+                    f"❌ Failed to perform extra extraction for  {other_path.name}: {e}"
+                )
         else:
             logger.info("Already extracted with extra filters")
-

@@ -70,12 +70,9 @@ source .venv/bin/activate
 uv sync
 ```
 
-### Install TensorFlow for YAMNet filtering (on macOS)
-
-If you want to use YAMNet-based classification (to extract e.g. guitar vs. keyboard segments from other.wav), install the extra dependencies:
 
 ```bash
-./setup_tensorflow.sh
+bash install_extras.sh
 ```
 
 ## 🎚️ Usage

@@ -1,17 +1,20 @@
 from collections import Counter
 from pathlib import Path
 
-import torch
-import torchaudio
-from torchaudio.functional import highpass_biquad, bandpass_biquad
-
+import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
-import numpy as np
+import torch
+import torchaudio
 from scipy.signal import resample
+from torchaudio.functional import bandpass_biquad, highpass_biquad
+
 from demucs_audiosplit import logger
 
-def apply_simple_filters(stem_path: Path, low_center: float = 400.0, high_cutoff: float = 700.0) -> None:
+
+def apply_simple_filters(
+    stem_path: Path, low_center: float = 400.0, high_cutoff: float = 700.0
+) -> None:
     """
     Apply frequency-based filtering to split a stem into lowband and highband approximations.
 
@@ -49,7 +52,8 @@ def apply_simple_filters(stem_path: Path, low_center: float = 400.0, high_cutoff
 
 def apply_yamnet_classification(stem_path: Path, top_k: int = 3) -> None:
     """
-    Classify audio segments in a stem using YAMNet and extract segments labeled as guitar or keyboard.
+    Classify audio segments in a stem using YAMNet and extract segments labeled
+    as guitar or keyboard.
 
     Parameters
     ----------
@@ -84,7 +88,9 @@ def apply_yamnet_classification(stem_path: Path, top_k: int = 3) -> None:
         # Load YAMNet
         model = hub.load("https://tfhub.dev/google/yamnet/1")
         class_map_path = model.class_map_path().numpy().decode("utf-8")
-        class_names = [line.strip() for line in Path(class_map_path).read_text().splitlines()]
+        class_names = [
+            line.strip() for line in Path(class_map_path).read_text().splitlines()
+        ]
 
         # Inference
         waveform_tensor = tf.convert_to_tensor(waveform, dtype=tf.float32)
@@ -94,8 +100,14 @@ def apply_yamnet_classification(stem_path: Path, top_k: int = 3) -> None:
         frame_hop = 0.96  # seconds per frame
         label_counter = Counter()
 
-        guitar_labels = {i for i, name in enumerate(class_names) if "guitar" in name.lower()}
-        keyboard_labels = {i for i, name in enumerate(class_names) if any(k in name.lower() for k in ["keyboard", "organ"])}
+        guitar_labels = {
+            i for i, name in enumerate(class_names) if "guitar" in name.lower()
+        }
+        keyboard_labels = {
+            i
+            for i, name in enumerate(class_names)
+            if any(k in name.lower() for k in ["keyboard", "organ"])
+        }
 
         guitar_segments = []
         keyboard_segments = []
@@ -122,7 +134,9 @@ def apply_yamnet_classification(stem_path: Path, top_k: int = 3) -> None:
                 torchaudio.save(str(path), audio_tensor, original_sr)
                 logger.info(f"✅ Saved {path.name} ({len(segments)} segments)")
             else:
-                logger.warning(f"⚠️  No segments found for {path.name}, file not created.")
+                logger.warning(
+                    f"⚠️  No segments found for {path.name}, file not created."
+                )
 
         save_segments(guitar_segments, guitar_path)
         save_segments(keyboard_segments, keyboard_path)
