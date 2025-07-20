@@ -6,7 +6,7 @@ from demucs_audiosplit.audiosplit import find_audio_files, run_demucs
 
 AUDIO_DIR = Path("audio")
 OUTPUT_DIR = Path("outputs")
-
+TRY_FILTERS_OTHERS = True
 
 def main() -> None:
     """
@@ -15,14 +15,14 @@ def main() -> None:
     AUDIO_DIR.mkdir(exist_ok=True)
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    audio_files = find_audio_files(AUDIO_DIR)
+    audio_files = find_audio_files(AUDIO_DIR, extensions=[".wav", ".mp3"])
 
     if not audio_files:
         logger.warning("⚠️  No .wav or .mp3 files found in 'audio/'")
         return
 
     for file in audio_files:
-        run_demucs(file, OUTPUT_DIR)
+        run_demucs(file_path=file, output_dir=OUTPUT_DIR, try_filter_others=TRY_FILTERS_OTHERS)
 
     logger.info("✅ All files processed.")
 
