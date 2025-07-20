@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 from typing import List
 from demucs_audiosplit import logger
-from demucs_audiosplit.filters import apply_simple_filters
+from demucs_audiosplit.filters import apply_simple_filters, apply_yamnet_classification
 
 
 def find_audio_files(directory: Path, extensions: List[str] = None) -> List[Path]:
@@ -65,6 +65,7 @@ def run_demucs(file_path: Path, output_dir: Path, try_filter_others: bool = Fals
                 stem_dir = output_dir /  "htdemucs" / file_path.stem
                 other_path = stem_dir / "other.wav"
                 apply_simple_filters(other_path)
+                apply_yamnet_classification(other_path)
             except:
                 logger.info(f"❌ Failed to perform extra extraction for  {other_path.name}: {e}")
         else:

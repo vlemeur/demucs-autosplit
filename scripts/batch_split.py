@@ -6,7 +6,7 @@ from demucs_audiosplit.audiosplit import find_audio_files, run_demucs
 
 AUDIO_DIR = Path("audio")
 OUTPUT_DIR = Path("outputs")
-TRY_FILTERS_OTHERS = True
+TRY_FILTERS_OTHERS = False
 
 def main() -> None:
     """
