@@ -1,0 +1,42 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual env
+.venv/
+env/
+ENV/
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# === Project-specific ===
+audio/
+outputs/
+separated/
+
+# === OS & editor ===
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# === uv ===
+uv.lock
+
+# === Tests ===
+.coverage
+.tox/
+.cache/
+.pytest_cache/_

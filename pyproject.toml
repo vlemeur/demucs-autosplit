@@ -1,0 +1,20 @@
+[project]
+name = "demucs-autosplit"
+version = "0.1.0"
+description = "Batch stem separation using Demucs"
+authors = [{ name = "Vincent LE MEUR", email = "vincent.le-meur@metroscope.tech" }]
+requires-python = ">=3.11"
+
+dependencies = [
+    "torch==2.2.2",
+    "demucs>=4.0.0",
+    "ruff>=0.4.0"
+]
+
+
+[tool.ruff]
+line-length = 100
+exclude = ["outputs", ".venv"]
+target-version = "py311"
+select = ["E", "F", "I"]
+fix = true
