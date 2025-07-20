@@ -9,12 +9,17 @@ dependencies = [
     "torch==2.2.2",
     "demucs>=4.0.0",
     "ruff>=0.4.0",
-    "tensorflow-macos>=2.15.0",
-    "tensorflow-hub>=0.16.1",
     "scipy>=1.11.0",
-    "numpy>=1.24.0" 
+    "numpy>=1.24.0",
+    "soundfile>=0.12.1",
+    "madmom @ git+https://github.com/CPJKU/madmom.git"
 ]
 
+[project.optional-dependencies]
+tensorflow = [
+    "tensorflow-macos>=2.15.0",
+    "tensorflow-hub>=0.16.1"
+]
 
 [tool.ruff]
 line-length = 100

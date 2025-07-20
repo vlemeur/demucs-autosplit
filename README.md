@@ -86,3 +86,12 @@ Place .wav or .mp3 files in the audio/ folder.
 
 ### 2. Run the batch separator
 
+```bash
+python scripts/batch_split.py
+```
+
+### 3. Run chord detection
+
+```bash
+python scripts/chords_detect.py
+```bash
