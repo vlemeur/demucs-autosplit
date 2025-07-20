@@ -1,10 +1,7 @@
 import subprocess
 from pathlib import Path
 from typing import List
-
-
-AUDIO_DIR = Path("audio")
-OUTPUT_DIR = Path("outputs")
+from demucs_audiosplit import logger
 
 
 def find_audio_files(directory: Path, extensions: List[str] = None) -> List[Path]:
@@ -37,14 +34,14 @@ def run_demucs(file_path: Path, output_dir: Path) -> None:
     output_dir : Path
         The directory where the separated stems will be saved.
     """
-    print(f"🔍 Separating: {file_path.name}")
+    logger.info(f"🔍 Separating: {file_path.name}")
     try:
         subprocess.run(
             ["demucs", "--out", str(output_dir), str(file_path)],
             check=True
         )
     except subprocess.CalledProcessError as e:
-        print(f"❌ Failed to process {file_path.name}: {e}")
+        logger.info(f"❌ Failed to process {file_path.name}: {e}")
 
 
 def main() -> None:
@@ -57,14 +54,10 @@ def main() -> None:
     audio_files = find_audio_files(AUDIO_DIR)
 
     if not audio_files:
-        print("⚠️  No .wav or .mp3 files found in 'audio/'")
+        logger.info("⚠️  No .wav or .mp3 files found in 'audio/'")
         return
 
     for file in audio_files:
         run_demucs(file, OUTPUT_DIR)
 
-    print("✅ Separation complete.")
-
-
-if __name__ == "__main__":
-    main()
+    logger.info("✅ Separation complete.")
