@@ -31,10 +31,6 @@ uv pip install -e .
 ```
 
 
-```bash
-bash install_extras.sh
-```
-
 ## 🎚️ Usage
 
 ### 1. Add your audio files

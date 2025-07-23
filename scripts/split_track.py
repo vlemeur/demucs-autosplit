@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from demucs_audiosplit import logger
 from demucs_audiosplit.audiosplit import find_audio_files, run_demucs
 

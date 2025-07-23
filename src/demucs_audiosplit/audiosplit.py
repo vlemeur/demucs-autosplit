@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import List
 
 from demucs_audiosplit import logger
-from demucs_audiosplit.filters import apply_simple_filters, apply_yamnet_classification
+from demucs_audiosplit.filters import apply_simple_filters
 
 
 def find_audio_files(directory: Path, extensions: List[str] = None) -> List[Path]:
