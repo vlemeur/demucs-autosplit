@@ -24,7 +24,7 @@ cd demucs-autosplit
 ### Set up the environment
 
 ```bash
-uv venv
+uv venv --python 3.11
 source .venv/bin/activate
 uv sync
 ```
