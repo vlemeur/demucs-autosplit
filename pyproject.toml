@@ -6,7 +6,7 @@ authors = [{ name = "Vincent LE MEUR", email = "vincent.le-meur@metroscope.tech"
 requires-python = ">=3.11"
 
 dependencies = [
-    "torch==2.2.2",
+    "torch>=2.2.2",
     "demucs>=4.0.0",
     "ruff>=0.4.0",
     "black>=24.0.0",

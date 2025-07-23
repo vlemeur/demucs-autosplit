@@ -50,4 +50,4 @@ python scripts/batch_split.py
 
 ```bash
 python scripts/chords_detect.py
-```bash
+```
