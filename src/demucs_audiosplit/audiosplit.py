@@ -69,7 +69,6 @@ def run_demucs(
                 stem_dir = output_dir / "htdemucs" / file_path.stem
                 other_path = stem_dir / "other.wav"
                 apply_simple_filters(other_path)
-                apply_yamnet_classification(other_path)
             except:
                 logger.info(
                     f"❌ Failed to perform extra extraction for  {other_path.name}: {e}"
