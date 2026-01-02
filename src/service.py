@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from demucs_audiosplit.audiosplit import run_demucs
+from demucs_audiosplit.chords_predict import predict_chords_from_wave
 
 
 def safe_filename(name: str) -> str:
@@ -216,3 +217,81 @@ def clear_workspace(work_dir: Path) -> None:
         except OSError:
             # Ignore errors (locked files, non-empty dirs, etc.)
             pass
+
+
+def list_stems_wav(stems_dir: Path, stems: List[str]) -> Dict[str, Path]:
+    """
+    List existing stem wav files in a directory.
+
+    Parameters
+    ----------
+    stems_dir : Path
+        Directory containing stems.
+    stems : list of str
+        Expected stem base names.
+
+    Returns
+    -------
+    dict of str to Path
+        Mapping {stem_name: wav_path} for stems that exist on disk.
+    """
+    existing: Dict[str, Path] = {}
+    for stem in stems:
+        wav_path = stems_dir / f"{stem}.wav"
+        if wav_path.exists():
+            existing[stem] = wav_path
+    return existing
+
+
+def predict_chords_for_stem(input_wav: Path, output_lab: Path) -> Path:
+    """
+    Predict chords from a wav file and write a .lab output.
+
+    Parameters
+    ----------
+    input_wav : Path
+        Input wav path (one stem).
+    output_lab : Path
+        Output .lab file path (created/overwritten).
+
+    Returns
+    -------
+    Path
+        The output_lab path.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the input wav does not exist.
+    """
+    if not input_wav.exists():
+        raise FileNotFoundError(f"Stem wav not found: {input_wav}")
+
+    output_lab.parent.mkdir(parents=True, exist_ok=True)
+    predict_chords_from_wave(input_wav, output_lab)
+    return output_lab
+
+
+def read_text_file(path: Path) -> str:
+    """
+    Read a UTF-8 text file from disk.
+
+    Parameters
+    ----------
+    path : Path
+        Text file path.
+
+    Returns
+    -------
+    str
+        File content as a string.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file does not exist.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    return path.read_text(encoding="utf-8")
