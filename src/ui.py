@@ -1,5 +1,3 @@
-"""Main User interface."""
-
 from __future__ import annotations
 
 import subprocess
@@ -49,16 +47,10 @@ class ChordsPlotConfig:
         Start time (seconds).
     end_s : float
         End time (seconds).
-    show_labels : bool
-        Whether to draw chord labels on the plot.
-    min_label_duration_s : float
-        Minimum segment duration required to display a label.
     """
 
     start_s: float
     end_s: float
-    show_labels: bool
-    min_label_duration_s: float
 
 
 def _init_session_state() -> None:
@@ -120,6 +112,10 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
     """
     Build a Plotly figure with waveform and chord regions.
 
+    The plot stays minimal (no chord text annotations). Chords are readable via
+    a color legend (simplified labels) and full details are shown on hover
+    (original label + timestamps).
+
     Parameters
     ----------
     times_s : numpy.ndarray
@@ -150,7 +146,6 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
         )
     )
 
-    # Use Plotly's default palette if available, otherwise fallback.
     palette = go.layout.Template().layout.colorway or [
         "#636EFA",
         "#EF553B",
@@ -164,13 +159,12 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
         "#FECB52",
     ]
 
-    # Colors are based on simplified labels (no voicing/inversion).
     simplified_labels = sorted({_simplify_chord_label(seg.label) for seg in segments})
     label_to_color: Dict[str, str] = {
         chord_label: palette[i % len(palette)] for i, chord_label in enumerate(simplified_labels)
     }
 
-    # Legend entries (dummy traces) for chord->color mapping.
+    # Dummy traces to build a clean legend (simplified labels only).
     for chord_label in simplified_labels:
         fig.add_trace(
             go.Scatter(
@@ -184,7 +178,7 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
             )
         )
 
-    # Chord regions + hover markers + optional simplified annotations.
+    # Regions + invisible markers for hover details.
     for seg in segments:
         if seg.end_s < config.start_s or seg.start_s > config.end_s:
             continue
@@ -201,8 +195,6 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
             layer="below",
         )
 
-        # Hover shows the full original label (with voicing/inversion),
-        # while the plot stays simplified.
         mid = 0.5 * (seg.start_s + seg.end_s)
         fig.add_trace(
             go.Scattergl(
@@ -219,18 +211,6 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
                 showlegend=False,
             )
         )
-
-        # Annotations only show the simplified label.
-        if config.show_labels and (seg.end_s - seg.start_s) >= config.min_label_duration_s:
-            fig.add_annotation(
-                x=mid,
-                y=0.95,
-                xref="x",
-                yref="paper",
-                text=simplified,
-                showarrow=False,
-                font={"size": 10},
-            )
 
     fig.update_layout(
         margin={"l": 10, "r": 10, "t": 40, "b": 10},
@@ -273,6 +253,7 @@ def _render_split_tab(try_filters: bool) -> None:
         st.info("Choose a .wav or .mp3 file to start.")
         return
 
+    # Save upload
     filename = safe_filename(uploaded.name)
     audio_path = save_bytes_to_file(uploaded.getbuffer(), UPLOAD_DIR / filename)
 
@@ -315,6 +296,7 @@ def _render_split_tab(try_filters: bool) -> None:
         st.success("✅ Split complete!")
         st.write("**Output folder:**", str(stems_dir))
 
+        # Store stems_dir for the Chord detection tab.
         st.session_state[SESSION_KEY_STEMS_DIR] = str(stems_dir)
 
         stems_bytes = read_stems(stems_dir=stems_dir, stems=STEMS)
@@ -470,16 +452,9 @@ def _get_plot_config(duration_s: float) -> ChordsPlotConfig:
             value=(0.0, float(min(duration_s, 20.0))),
             step=0.1,
         )
-        return ChordsPlotConfig(
-            start_s=start_s, end_s=end_s, show_labels=True, min_label_duration_s=1.0
-        )
+        return ChordsPlotConfig(start_s=start_s, end_s=end_s)
 
-    return ChordsPlotConfig(
-        start_s=0.0,
-        end_s=float(duration_s),
-        show_labels=True,
-        min_label_duration_s=6.0,
-    )
+    return ChordsPlotConfig(start_s=0.0, end_s=float(duration_s))
 
 
 def _render_chords_plot(output_lab: Path, input_wav: Path) -> bool:
