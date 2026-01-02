@@ -8,25 +8,73 @@ requires-python = ">=3.11"
 dependencies = [
     "torch>=2.2.2",
     "demucs>=4.0.0",
-    "ruff>=0.4.0",
-    "black>=24.0.0",
     "scipy>=1.11.0",
     "numpy>=1.24.0",
     "soundfile>=0.12.1",
-    "madmom @ git+https://github.com/CPJKU/madmom.git"
+    "madmom @ git+https://github.com/CPJKU/madmom.git",
 ]
 
+[dependency-groups]
+dev = [
+    "pre-commit>=3.7.0",
+    "ruff>=0.4.10",
+    "mypy>=1.10.0",
+    "pylint>=3.2.5",
+    "codespell>=2.3.0",
+]
 
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 
+# ---------------------
+# Ruff
+# ---------------------
 [tool.ruff]
 line-length = 100
-exclude = ["outputs", ".venv"]
 target-version = "py311"
+exclude = ["outputs", ".venv"]
 select = ["E", "F", "I"]
 fix = true
+
+# ---------------------
+# Ruff formatter
+# ---------------------
+[tool.ruff.format]
+quote-style = "double"
+
+# ---------------------
+# Mypy (default / permissif)
+# ---------------------
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+
+# ---------------------
+# Pylint (default-friendly)
+# ---------------------
+[tool.pylint.main]
+py-version = "3.11"
+ignore = ["outputs", ".venv"]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.messages_control]
+disable = [
+    "C0114", # missing-module-docstring
+    "C0115", # missing-class-docstring
+    "C0116", # missing-function-docstring
+]
+
+# ---------------------
+# Codespell
+# ---------------------
+[tool.codespell]
+skip = ".venv,outputs,uv.lock"
+check-filenames = true
+check-hidden = true
