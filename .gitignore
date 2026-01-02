@@ -32,11 +32,13 @@ Thumbs.db
 .idea/
 .vscode/
 
-# === uv ===
-uv.lock
 
 # === Tests ===
 .coverage
 .tox/
 .cache/
 .pytest_cache/_
+
+# === Audio files ===
+*.wav
+*.mp3
