@@ -93,6 +93,29 @@ def _render_sidebar() -> bool:
     return try_filters
 
 
+def _simplify_chord_label(label: str) -> str:
+    """
+    Simplify chord labels for display purposes.
+
+    This removes common inversion/voicing notation such as slash bass notes.
+    Example: "G:maj/B" -> "G:maj".
+
+    Parameters
+    ----------
+    label : str
+        Original chord label from the .lab file.
+
+    Returns
+    -------
+    str
+        Simplified chord label.
+    """
+    simplified = label.strip()
+    if "/" in simplified:
+        simplified = simplified.split("/", maxsplit=1)[0].strip()
+    return simplified
+
+
 def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotConfig) -> go.Figure:
     """
     Build a Plotly figure with waveform and chord regions.
@@ -115,6 +138,7 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
     """
     fig = go.Figure()
 
+    # Waveform (GL trace for performance)
     fig.add_trace(
         go.Scattergl(
             x=times_s,
@@ -122,9 +146,11 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
             mode="lines",
             name="Waveform",
             hoverinfo="skip",
+            showlegend=False,
         )
     )
 
+    # Use Plotly's default palette if available, otherwise fallback.
     palette = go.layout.Template().layout.colorway or [
         "#636EFA",
         "#EF553B",
@@ -138,26 +164,45 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
         "#FECB52",
     ]
 
-    labels = sorted({seg.label for seg in segments})
+    # Colors are based on simplified labels (no voicing/inversion).
+    simplified_labels = sorted({_simplify_chord_label(seg.label) for seg in segments})
     label_to_color: Dict[str, str] = {
-        label: palette[i % len(palette)] for i, label in enumerate(labels)
+        chord_label: palette[i % len(palette)] for i, chord_label in enumerate(simplified_labels)
     }
 
+    # Legend entries (dummy traces) for chord->color mapping.
+    for chord_label in simplified_labels:
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker={"size": 10, "color": label_to_color[chord_label]},
+                name=chord_label,
+                hoverinfo="skip",
+                showlegend=True,
+            )
+        )
+
+    # Chord regions + hover markers + optional simplified annotations.
     for seg in segments:
         if seg.end_s < config.start_s or seg.start_s > config.end_s:
             continue
 
-        color = label_to_color.get(seg.label, "#999999")
+        simplified = _simplify_chord_label(seg.label)
+        color = label_to_color.get(simplified, "#999999")
 
         fig.add_vrect(
             x0=seg.start_s,
             x1=seg.end_s,
             fillcolor=color,
-            opacity=0.20,
+            opacity=0.22,
             line_width=0,
             layer="below",
         )
 
+        # Hover shows the full original label (with voicing/inversion),
+        # while the plot stays simplified.
         mid = 0.5 * (seg.start_s + seg.end_s)
         fig.add_trace(
             go.Scattergl(
@@ -167,6 +212,7 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
                 marker={"size": 6, "opacity": 0.0},
                 hovertemplate=(
                     f"Chord: <b>{seg.label}</b><br>"
+                    f"Simplified: <b>{simplified}</b><br>"
                     f"{seg.start_s:.2f}s → {seg.end_s:.2f}s"
                     "<extra></extra>"
                 ),
@@ -174,23 +220,30 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
             )
         )
 
+        # Annotations only show the simplified label.
         if config.show_labels and (seg.end_s - seg.start_s) >= config.min_label_duration_s:
             fig.add_annotation(
                 x=mid,
                 y=0.95,
                 xref="x",
                 yref="paper",
-                text=seg.label,
+                text=simplified,
                 showarrow=False,
                 font={"size": 10},
             )
 
     fig.update_layout(
-        margin={"l": 10, "r": 10, "t": 10, "b": 10},
+        margin={"l": 10, "r": 10, "t": 40, "b": 10},
         xaxis_title="Time (s)",
         yaxis_title="Amplitude",
-        showlegend=False,
         hovermode="x",
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0.0,
+        },
     )
     fig.update_xaxes(range=[config.start_s, config.end_s])
 
@@ -424,8 +477,8 @@ def _get_plot_config(duration_s: float) -> ChordsPlotConfig:
     return ChordsPlotConfig(
         start_s=0.0,
         end_s=float(duration_s),
-        show_labels=False,
-        min_label_duration_s=10.0,
+        show_labels=True,
+        min_label_duration_s=6.0,
     )
 
 
