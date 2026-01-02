@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set, Tuple
 
+import plotly.graph_objects as go
 import streamlit as st  # pylint: disable=import-error
 from service import (
     clear_workspace,
+    extract_wav_clip_bytes,
     find_stems_dir,
     list_stems_wav,
+    load_waveform_for_plot,
     predict_chords_for_stem,
+    read_chords_lab,
     read_stems,
     read_text_file,
     run_split,
@@ -30,6 +35,27 @@ SUPPORTED_EXT: Set[str] = {".wav", ".mp3"}
 STEMS: List[str] = ["drums", "bass", "other", "vocals"]
 
 SESSION_KEY_STEMS_DIR: str = "stems_dir"
+SESSION_KEY_CLIP_BYTES: str = "clip_bytes"
+SESSION_KEY_CLIP_LABEL: str = "clip_label"
+SESSION_KEY_ZOOM_START_S: str = "zoom_start_s"
+SESSION_KEY_ZOOM_END_S: str = "zoom_end_s"
+
+
+@dataclass(frozen=True)
+class ChordsPlotConfig:
+    """
+    Configuration for chord waveform plotting.
+
+    Attributes
+    ----------
+    start_s : float
+        Start time (seconds).
+    end_s : float
+        End time (seconds).
+    """
+
+    start_s: float
+    end_s: float
 
 
 def _init_session_state() -> None:
@@ -42,6 +68,14 @@ def _init_session_state() -> None:
     """
     if SESSION_KEY_STEMS_DIR not in st.session_state:
         st.session_state[SESSION_KEY_STEMS_DIR] = None
+    if SESSION_KEY_CLIP_BYTES not in st.session_state:
+        st.session_state[SESSION_KEY_CLIP_BYTES] = None
+    if SESSION_KEY_CLIP_LABEL not in st.session_state:
+        st.session_state[SESSION_KEY_CLIP_LABEL] = None
+    if SESSION_KEY_ZOOM_START_S not in st.session_state:
+        st.session_state[SESSION_KEY_ZOOM_START_S] = 0.0
+    if SESSION_KEY_ZOOM_END_S not in st.session_state:
+        st.session_state[SESSION_KEY_ZOOM_END_S] = 0.0
 
 
 def _render_sidebar() -> bool:
@@ -60,8 +94,155 @@ def _render_sidebar() -> bool:
         if st.button("🧹 Clear workspace"):
             clear_workspace(WORK_DIR)
             st.session_state[SESSION_KEY_STEMS_DIR] = None
+            st.session_state[SESSION_KEY_CLIP_BYTES] = None
+            st.session_state[SESSION_KEY_CLIP_LABEL] = None
             st.success("Workspace cleared.")
     return try_filters
+
+
+def _simplify_chord_label(label: str) -> str:
+    """
+    Simplify chord labels for display purposes.
+
+    This removes common inversion/voicing notation such as slash bass notes.
+    Example: "G:maj/B" -> "G:maj".
+
+    Parameters
+    ----------
+    label : str
+        Original chord label from the .lab file.
+
+    Returns
+    -------
+    str
+        Simplified chord label.
+    """
+    simplified = label.strip()
+    if "/" in simplified:
+        simplified = simplified.split("/", maxsplit=1)[0].strip()
+    return simplified
+
+
+def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotConfig) -> go.Figure:
+    """
+    Build a Plotly figure with waveform and chord regions.
+
+    The plot stays minimal (no chord text annotations). Chords are readable via
+    a color legend (simplified labels) and full details are shown on hover
+    (original label + timestamps).
+
+    Parameters
+    ----------
+    times_s : numpy.ndarray
+        Time axis in seconds.
+    mono : numpy.ndarray
+        Mono waveform samples (downsampled).
+    segments : Sequence[ChordSegment]
+        Chord segments parsed from a .lab file.
+    config : ChordsPlotConfig
+        Plot configuration.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        Plotly figure ready to be displayed in Streamlit.
+    """
+    fig = go.Figure()
+
+    # Waveform (GL trace for performance)
+    fig.add_trace(
+        go.Scattergl(
+            x=times_s,
+            y=mono,
+            mode="lines",
+            name="Waveform",
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+    palette = go.layout.Template().layout.colorway or [
+        "#636EFA",
+        "#EF553B",
+        "#00CC96",
+        "#AB63FA",
+        "#FFA15A",
+        "#19D3F3",
+        "#FF6692",
+        "#B6E880",
+        "#FF97FF",
+        "#FECB52",
+    ]
+
+    simplified_labels = sorted({_simplify_chord_label(seg.label) for seg in segments})
+    label_to_color: Dict[str, str] = {
+        chord_label: palette[i % len(palette)] for i, chord_label in enumerate(simplified_labels)
+    }
+
+    # Dummy traces to build a clean legend (simplified labels only).
+    for chord_label in simplified_labels:
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker={"size": 10, "color": label_to_color[chord_label]},
+                name=chord_label,
+                hoverinfo="skip",
+                showlegend=True,
+            )
+        )
+
+    # Regions + invisible markers for hover details.
+    for seg in segments:
+        if seg.end_s < config.start_s or seg.start_s > config.end_s:
+            continue
+
+        simplified = _simplify_chord_label(seg.label)
+        color = label_to_color.get(simplified, "#999999")
+
+        fig.add_vrect(
+            x0=seg.start_s,
+            x1=seg.end_s,
+            fillcolor=color,
+            opacity=0.22,
+            line_width=0,
+            layer="below",
+        )
+
+        mid = 0.5 * (seg.start_s + seg.end_s)
+        fig.add_trace(
+            go.Scattergl(
+                x=[mid],
+                y=[0.0],
+                mode="markers",
+                marker={"size": 6, "opacity": 0.0},
+                hovertemplate=(
+                    f"Chord: <b>{seg.label}</b><br>"
+                    f"Simplified: <b>{simplified}</b><br>"
+                    f"{seg.start_s:.2f}s → {seg.end_s:.2f}s"
+                    "<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+
+    fig.update_layout(
+        margin={"l": 10, "r": 10, "t": 40, "b": 10},
+        xaxis_title="Time (s)",
+        yaxis_title="Amplitude",
+        hovermode="x",
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0.0,
+        },
+    )
+    fig.update_xaxes(range=[config.start_s, config.end_s])
+
+    return fig
 
 
 def _render_split_tab(try_filters: bool) -> None:
@@ -160,6 +341,293 @@ def _render_split_tab(try_filters: bool) -> None:
             st.audio(stems_bytes[stem], format="audio/wav")
 
 
+def _get_stems_dir() -> Optional[Path]:
+    """
+    Get the stems directory stored in the session state.
+
+    Returns
+    -------
+    Path or None
+        Stems directory if available and existing, otherwise None.
+    """
+    stems_dir_str = st.session_state.get(SESSION_KEY_STEMS_DIR)
+    if stems_dir_str is None:
+        st.info("Run a stem separation first, then come back here to detect chords.")
+        return None
+
+    stems_dir = Path(stems_dir_str)
+    if not stems_dir.exists():
+        st.warning("Stored stems folder does not exist anymore. Please run a split again.")
+        st.session_state[SESSION_KEY_STEMS_DIR] = None
+        return None
+
+    return stems_dir
+
+
+def _get_stems_paths(stems_dir: Path) -> Optional[Dict[str, Path]]:
+    """
+    Collect existing stem wav paths for chord prediction.
+
+    Parameters
+    ----------
+    stems_dir : Path
+        Directory containing stem wav files.
+
+    Returns
+    -------
+    dict of str to Path or None
+        Mapping {stem_name: wav_path}, or None if no stems are found.
+    """
+    stems_paths: Dict[str, Path] = list_stems_wav(stems_dir=stems_dir, stems=STEMS)
+    if not stems_paths:
+        st.warning("No stems were found in the stored stems folder.")
+        return None
+    return stems_paths
+
+
+def _render_chords_controls(stems_paths: Dict[str, Path]) -> Tuple[str, bool]:
+    """
+    Render stem selection and action button.
+
+    Parameters
+    ----------
+    stems_paths : dict of str to Path
+        Available stems.
+
+    Returns
+    -------
+    selected_stem : str
+        Selected stem name.
+    run_button : bool
+        True if the user clicked the "Predict chords" button.
+    """
+    cols = st.columns([2, 1])
+    with cols[0]:
+        stem_names = list(stems_paths.keys())
+        default_index = stem_names.index("other") if "other" in stem_names else 0
+        selected_stem = st.selectbox(
+            "Stem", stem_names, index=default_index, label_visibility="visible"
+        )
+    with cols[1]:
+        st.write("")
+        st.write("")
+        run_button = st.button("🎹 Predict chords", type="primary", use_container_width=True)
+
+    return selected_stem, run_button
+
+
+def _maybe_run_chords_prediction(input_wav: Path, output_lab: Path, run_button: bool) -> None:
+    """
+    Run chord prediction if requested.
+
+    Parameters
+    ----------
+    input_wav : Path
+        Selected stem wav path.
+    output_lab : Path
+        Output chords lab file path.
+    run_button : bool
+        Whether the button was clicked.
+
+    Returns
+    -------
+    None
+    """
+    if not run_button:
+        return
+
+    try:
+        with st.spinner("Predicting chords..."):
+            predict_chords_for_stem(input_wav=input_wav, output_lab=output_lab)
+        st.success("Chord prediction completed.")
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        st.error(str(exc))
+
+
+def _get_plot_config(duration_s: float) -> ChordsPlotConfig:
+    """
+    Render zoom UI and compute plot configuration.
+
+    Parameters
+    ----------
+    duration_s : float
+        Audio duration in seconds.
+
+    Returns
+    -------
+    ChordsPlotConfig
+        Plot configuration.
+    """
+    zoom = st.toggle("Zoom", value=False)
+    if zoom:
+        start_s, end_s = st.slider(
+            "Time range (seconds)",
+            min_value=0.0,
+            max_value=float(duration_s),
+            value=(0.0, float(min(duration_s, 20.0))),
+            step=0.1,
+        )
+        st.session_state[SESSION_KEY_ZOOM_START_S] = float(start_s)
+        st.session_state[SESSION_KEY_ZOOM_END_S] = float(end_s)
+        return ChordsPlotConfig(start_s=float(start_s), end_s=float(end_s))
+
+    st.session_state[SESSION_KEY_ZOOM_START_S] = 0.0
+    st.session_state[SESSION_KEY_ZOOM_END_S] = float(duration_s)
+    return ChordsPlotConfig(start_s=0.0, end_s=float(duration_s))
+
+
+def _render_chords_plot(output_lab: Path, input_wav: Path) -> Optional[float]:
+    """
+    Render the Plotly visualization if chords are available.
+
+    Parameters
+    ----------
+    output_lab : Path
+        Chords lab file path.
+    input_wav : Path
+        Selected stem wav path.
+
+    Returns
+    -------
+    float or None
+        Audio duration in seconds if the plot was rendered, otherwise None.
+    """
+    if not output_lab.exists():
+        st.info("No chords detected yet. Click “Predict chords” to generate chords.lab.")
+        return None
+
+    try:
+        segments = read_chords_lab(output_lab)
+        times_s, mono, duration_s = load_waveform_for_plot(input_wav)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        st.error(str(exc))
+        return None
+
+    config = _get_plot_config(duration_s=float(duration_s))
+    fig = _build_chords_waveform_figure(
+        times_s=times_s, mono=mono, segments=segments, config=config
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    return float(duration_s)
+
+
+def _render_playback_controls(input_wav: Path, duration_s: float) -> None:  # pylint: disable=too-many-locals
+    """
+    Render playback controls to listen to a short clip starting at a given time.
+
+    Parameters
+    ----------
+    input_wav : Path
+        Selected stem WAV path.
+    duration_s : float
+        Total audio duration in seconds.
+
+    Returns
+    -------
+    None
+    """
+    st.subheader("Playback")
+
+    # Read-only reference from the last zoom state.
+    zoom_start = float(st.session_state.get(SESSION_KEY_ZOOM_START_S, 0.0))
+    zoom_end = float(st.session_state.get(SESSION_KEY_ZOOM_END_S, float(duration_s)))
+
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        start_s = st.slider(
+            "Start (s)",
+            min_value=0.0,
+            max_value=float(duration_s),
+            value=float(min(max(zoom_start, 0.0), duration_s)),
+            step=0.1,
+        )
+
+    with col2:
+        clip_len = st.slider(
+            "Clip length (s)",
+            min_value=1.0,
+            max_value=30.0,
+            value=10.0,
+            step=1.0,
+        )
+
+    with col3:
+        st.write("")
+        st.write("")
+        play_clip = st.button("▶️ Play clip", type="secondary", use_container_width=True)
+
+    # Secondary quick action: play from zoom start without changing the slider manually.
+    play_zoom = st.button(
+        f"▶️ Play from zoom start ({zoom_start:.1f}s)",
+        type="secondary",
+        use_container_width=True,
+        disabled=zoom_end <= zoom_start,
+    )
+
+    if play_zoom:
+        start_s = zoom_start
+
+    if play_clip or play_zoom:
+        try:
+            clip_bytes, clip_duration = extract_wav_clip_bytes(
+                wav_path=input_wav,
+                start_s=float(start_s),
+                duration_s=float(clip_len),
+            )
+        except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:
+            st.error(str(exc))
+            return
+
+        if not clip_bytes:
+            st.warning("Clip start is beyond the end of the file.")
+            return
+
+        st.session_state[SESSION_KEY_CLIP_BYTES] = clip_bytes
+        st.session_state[SESSION_KEY_CLIP_LABEL] = (
+            f"{start_s:.1f}s → {start_s + clip_duration:.1f}s"
+        )
+
+    clip = st.session_state.get(SESSION_KEY_CLIP_BYTES)
+    clip_label = st.session_state.get(SESSION_KEY_CLIP_LABEL)
+    if clip:
+        if clip_label:
+            st.caption(f"Playing: {clip_label}")
+        st.audio(clip, format="audio/wav")
+
+
+def _render_chords_results_expander(output_lab: Path) -> None:
+    """
+    Render the results expander containing timestamps and download button.
+
+    Parameters
+    ----------
+    output_lab : Path
+        Chords lab file path.
+
+    Returns
+    -------
+    None
+    """
+    if not output_lab.exists():
+        return
+
+    with st.expander("Results (timestamps) / Download", expanded=False):
+        try:
+            lab_content = read_text_file(output_lab)
+        except FileNotFoundError as exc:
+            st.error(str(exc))
+            return
+
+        st.download_button(
+            label="⬇️ Download chords.lab",
+            data=lab_content.encode("utf-8"),
+            file_name="chords.lab",
+            mime="text/plain",
+        )
+        st.code(lab_content, language="text")
+
+
 def _render_chords_tab() -> None:
     """
     Render the chord detection tab.
@@ -168,62 +636,27 @@ def _render_chords_tab() -> None:
     -------
     None
     """
-    stems_dir_str = st.session_state.get(SESSION_KEY_STEMS_DIR)
-    if stems_dir_str is None:
-        st.info("Run a stem separation first, then come back here to detect chords.")
+    stems_dir = _get_stems_dir()
+    if stems_dir is None:
         return
 
-    stems_dir = Path(stems_dir_str)
-    if not stems_dir.exists():
-        st.warning("Stored stems folder does not exist anymore. Please run a split again.")
-        st.session_state[SESSION_KEY_STEMS_DIR] = None
+    stems_paths = _get_stems_paths(stems_dir=stems_dir)
+    if stems_paths is None:
         return
 
-    st.write("**Stems folder:**", str(stems_dir))
-
-    stems_paths: Dict[str, Path] = list_stems_wav(stems_dir=stems_dir, stems=STEMS)
-    if not stems_paths:
-        st.warning("No stems were found in the stored stems folder.")
-        return
-
-    stem_names = list(stems_paths.keys())
-    default_index = stem_names.index("other") if "other" in stem_names else 0
-    selected_stem = st.selectbox("Select a stem", stem_names, index=default_index)
+    selected_stem, run_button = _render_chords_controls(stems_paths=stems_paths)
 
     input_wav = stems_paths[selected_stem]
     output_lab = stems_dir / "chords.lab"
 
-    col1, col2 = st.columns(2)
-    with col1:
-        run_button = st.button("🎹 Predict chords", type="primary")
-    with col2:
-        st.write(f"Output: `{output_lab.name}`")
+    _maybe_run_chords_prediction(input_wav=input_wav, output_lab=output_lab, run_button=run_button)
 
-    if run_button:
-        try:
-            with st.spinner("Predicting chords..."):
-                predict_chords_for_stem(input_wav=input_wav, output_lab=output_lab)
-            st.success("Chord prediction completed.")
-        except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
-            st.error(str(exc))
-            return
+    audio_duration = _render_chords_plot(output_lab=output_lab, input_wav=input_wav)
+    if audio_duration is None:
+        return
 
-    if output_lab.exists():
-        try:
-            lab_content = read_text_file(output_lab)
-        except FileNotFoundError as exc:
-            st.error(str(exc))
-            return
-
-        st.subheader("Result")
-        st.code(lab_content, language="text")
-
-        st.download_button(
-            label="⬇️ Download chords.lab",
-            data=lab_content.encode("utf-8"),
-            file_name="chords.lab",
-            mime="text/plain",
-        )
+    _render_playback_controls(input_wav=input_wav, duration_s=audio_duration)
+    _render_chords_results_expander(output_lab=output_lab)
 
 
 def main() -> None:

@@ -17,6 +17,7 @@ dependencies = [
     "madmom @ git+https://github.com/CPJKU/madmom.git",
     "streamlit>=1.36.0",
     "watchdog>=4.0.0",
+    "plotly>=5.18.0",
 ]
 
 
@@ -66,6 +67,9 @@ ignore_missing_imports = true
 [tool.pylint.main]
 py-version = "3.11"
 ignore = ["outputs", ".venv"]
+disable = [
+  "import-error",
+]
 
 [tool.pylint.format]
 max-line-length = 100
