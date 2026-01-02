@@ -67,6 +67,9 @@ ignore_missing_imports = true
 [tool.pylint.main]
 py-version = "3.11"
 ignore = ["outputs", ".venv"]
+disable = [
+  "import-error",
+]
 
 [tool.pylint.format]
 max-line-length = 100

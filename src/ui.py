@@ -4,12 +4,15 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Set
 
+import plotly.graph_objects as go
 import streamlit as st  # pylint: disable=import-error
 from service import (
     clear_workspace,
     find_stems_dir,
     list_stems_wav,
+    load_waveform_for_plot,
     predict_chords_for_stem,
+    read_chords_lab,
     read_stems,
     read_text_file,
     run_split,
@@ -62,6 +65,106 @@ def _render_sidebar() -> bool:
             st.session_state[SESSION_KEY_STEMS_DIR] = None
             st.success("Workspace cleared.")
     return try_filters
+
+
+def _build_chords_waveform_figure(
+    times_s,
+    mono,
+    segments,
+    start_s: float,
+    end_s: float,
+) -> go.Figure:
+    """
+    Build a Plotly figure with waveform and chord regions.
+
+    Parameters
+    ----------
+    times_s : numpy.ndarray
+        Time axis in seconds.
+    mono : numpy.ndarray
+        Mono waveform samples (downsampled).
+    segments : Sequence[ChordSegment]
+        Chord segments parsed from a .lab file.
+    start_s : float
+        Start time for x-axis (seconds).
+    end_s : float
+        End time for x-axis (seconds).
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        Plotly figure ready to be displayed in Streamlit.
+    """
+    fig = go.Figure()
+
+    # Waveform (GL trace for better performance on long files)
+    fig.add_trace(
+        go.Scattergl(
+            x=times_s,
+            y=mono,
+            mode="lines",
+            name="Waveform",
+            hoverinfo="skip",
+        )
+    )
+
+    # Use Plotly's default colorway if available, otherwise fallback to a small palette.
+    palette = go.layout.Template().layout.colorway or [
+        "#636EFA",
+        "#EF553B",
+        "#00CC96",
+        "#AB63FA",
+        "#FFA15A",
+        "#19D3F3",
+        "#FF6692",
+        "#B6E880",
+        "#FF97FF",
+        "#FECB52",
+    ]
+
+    labels = sorted({seg.label for seg in segments})
+    label_to_color: Dict[str, str] = {
+        label: palette[i % len(palette)] for i, label in enumerate(labels)
+    }
+
+    # Chord regions + annotations
+    for seg in segments:
+        if seg.end_s < start_s or seg.start_s > end_s:
+            continue
+
+        color = label_to_color.get(seg.label, "#999999")
+
+        fig.add_vrect(
+            x0=seg.start_s,
+            x1=seg.end_s,
+            fillcolor=color,
+            opacity=0.20,
+            line_width=0,
+            layer="below",
+        )
+
+        # Add labels only for regions long enough to avoid clutter.
+        if (seg.end_s - seg.start_s) >= 0.5:
+            fig.add_annotation(
+                x=0.5 * (seg.start_s + seg.end_s),
+                y=0.95,
+                xref="x",
+                yref="paper",
+                text=seg.label,
+                showarrow=False,
+                font={"size": 10},
+            )
+
+    fig.update_layout(
+        margin={"l": 10, "r": 10, "t": 10, "b": 10},
+        xaxis_title="Time (s)",
+        yaxis_title="Amplitude",
+        showlegend=False,
+        hovermode="x",
+    )
+    fig.update_xaxes(range=[start_s, end_s])
+
+    return fig
 
 
 def _render_split_tab(try_filters: bool) -> None:
@@ -160,7 +263,7 @@ def _render_split_tab(try_filters: bool) -> None:
             st.audio(stems_bytes[stem], format="audio/wav")
 
 
-def _render_chords_tab() -> None:
+def _render_chords_tab() -> None:  # pylint: disable=too-many-locals,too-many-return-statements,too-many-statements
     """
     Render the chord detection tab.
 
@@ -208,22 +311,64 @@ def _render_chords_tab() -> None:
             st.error(str(exc))
             return
 
-    if output_lab.exists():
-        try:
-            lab_content = read_text_file(output_lab)
-        except FileNotFoundError as exc:
-            st.error(str(exc))
-            return
+    if not output_lab.exists():
+        st.info("No chords file found yet. Run chord prediction to generate chords.lab.")
+        return
 
-        st.subheader("Result")
-        st.code(lab_content, language="text")
+    try:
+        lab_content = read_text_file(output_lab)
+    except FileNotFoundError as exc:
+        st.error(str(exc))
+        return
 
-        st.download_button(
-            label="⬇️ Download chords.lab",
-            data=lab_content.encode("utf-8"),
-            file_name="chords.lab",
-            mime="text/plain",
+    st.subheader("Result")
+    st.code(lab_content, language="text")
+
+    st.download_button(
+        label="⬇️ Download chords.lab",
+        data=lab_content.encode("utf-8"),
+        file_name="chords.lab",
+        mime="text/plain",
+    )
+
+    st.subheader("Visualization")
+
+    show_viz = st.toggle("Show waveform + chord regions (Plotly)", value=True)
+    if not show_viz:
+        return
+
+    try:
+        segments = read_chords_lab(output_lab)
+    except (FileNotFoundError, ValueError) as exc:
+        st.error(str(exc))
+        return
+
+    try:
+        times_s, mono, duration_s = load_waveform_for_plot(input_wav)
+    except (FileNotFoundError, RuntimeError) as exc:
+        st.error(str(exc))
+        return
+
+    zoom = st.checkbox("Zoom", value=False)
+    if zoom:
+        start_s, end_s = st.slider(
+            "Time range (seconds)",
+            min_value=0.0,
+            max_value=float(duration_s),
+            value=(0.0, float(min(duration_s, 30.0))),
+            step=0.1,
         )
+    else:
+        start_s, end_s = 0.0, float(duration_s)
+
+    fig = _build_chords_waveform_figure(
+        times_s=times_s,
+        mono=mono,
+        segments=segments,
+        start_s=start_s,
+        end_s=end_s,
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def main() -> None:

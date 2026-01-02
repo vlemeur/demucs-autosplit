@@ -2,11 +2,147 @@ from __future__ import annotations
 
 import io
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
+import numpy as np
+import soundfile as sf
 from demucs_audiosplit.audiosplit import run_demucs
 from demucs_audiosplit.chords_predict import predict_chords_from_wave
+
+
+@dataclass(frozen=True)
+class ChordSegment:
+    """
+    A chord segment parsed from a .lab file.
+
+    Attributes
+    ----------
+    start_s : float
+        Segment start time in seconds.
+    end_s : float
+        Segment end time in seconds.
+    label : str
+        Chord label (e.g. "C:maj", "A:min", "N").
+    """
+
+    start_s: float
+    end_s: float
+    label: str
+
+
+def read_chords_lab(lab_path: Path) -> List[ChordSegment]:
+    """
+    Read a chords .lab file with lines formatted as: <start> <end> <label>.
+
+    Parameters
+    ----------
+    lab_path : Path
+        Path to the .lab file.
+
+    Returns
+    -------
+    list of ChordSegment
+        Parsed chord segments in file order.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the lab file does not exist.
+    ValueError
+        If a line cannot be parsed.
+    """
+    if not lab_path.exists():
+        raise FileNotFoundError(f"File not found: {lab_path}")
+
+    segments: List[ChordSegment] = []
+    for raw_line in lab_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        parts = line.split(maxsplit=2)
+        if len(parts) < 3:
+            raise ValueError(f"Invalid .lab line: {raw_line}")
+
+        start_s = float(parts[0])
+        end_s = float(parts[1])
+        label = parts[2].strip()
+
+        if end_s < start_s:
+            raise ValueError(f"Invalid segment (end < start): {raw_line}")
+
+        segments.append(ChordSegment(start_s=start_s, end_s=end_s, label=label))
+
+    return segments
+
+
+def load_waveform_for_plot(
+    wav_path: Path,
+    max_points: int = 200_000,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Load a wav file and return a downsampled mono waveform for plotting.
+
+    The waveform is converted to mono by averaging channels. If the file is
+    long, the returned arrays are downsampled by striding to keep plotting fast.
+
+    Parameters
+    ----------
+    wav_path : Path
+        Path to the wav file.
+    max_points : int, default=200_000
+        Maximum number of points returned for plotting performance.
+
+    Returns
+    -------
+    times_s : numpy.ndarray
+        Time axis in seconds.
+    mono : numpy.ndarray
+        Mono waveform samples (float32).
+    duration_s : float
+        Total duration in seconds.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the wav file does not exist.
+    RuntimeError
+        If the audio cannot be read.
+    ValueError
+        If max_points is not positive.
+    """
+    if not wav_path.exists():
+        raise FileNotFoundError(f"File not found: {wav_path}")
+
+    if max_points <= 0:
+        raise ValueError("max_points must be a positive integer")
+
+    try:
+        # always_2d ensures shape (n_samples, n_channels)
+        audio, sample_rate = sf.read(wav_path, always_2d=True)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        raise RuntimeError(f"Failed to read audio: {wav_path}") from exc
+
+    if audio.size == 0:
+        raise RuntimeError(f"Empty audio file: {wav_path}")
+
+    # Convert to mono by averaging channels
+    mono = audio.mean(axis=1).astype(np.float32)
+    n_samples = int(mono.shape[0])
+    sr = float(sample_rate)
+    duration_s = float(n_samples) / sr
+
+    # Downsample by stride for performance
+    if n_samples > max_points:
+        stride = int(np.ceil(n_samples / float(max_points)))
+        mono = mono[::stride]
+        times_s = (np.arange(mono.shape[0], dtype=np.float32) * float(stride)) / sr
+    else:
+        times_s = np.arange(n_samples, dtype=np.float32) / sr
+
+    return times_s, mono, duration_s
 
 
 def safe_filename(name: str) -> str:
