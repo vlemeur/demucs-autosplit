@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st  # pylint: disable=import-error
 from service import (
     clear_workspace,
+    extract_wav_clip_bytes,
     find_stems_dir,
     list_stems_wav,
     load_waveform_for_plot,
@@ -34,6 +35,10 @@ SUPPORTED_EXT: Set[str] = {".wav", ".mp3"}
 STEMS: List[str] = ["drums", "bass", "other", "vocals"]
 
 SESSION_KEY_STEMS_DIR: str = "stems_dir"
+SESSION_KEY_CLIP_BYTES: str = "clip_bytes"
+SESSION_KEY_CLIP_LABEL: str = "clip_label"
+SESSION_KEY_ZOOM_START_S: str = "zoom_start_s"
+SESSION_KEY_ZOOM_END_S: str = "zoom_end_s"
 
 
 @dataclass(frozen=True)
@@ -63,6 +68,14 @@ def _init_session_state() -> None:
     """
     if SESSION_KEY_STEMS_DIR not in st.session_state:
         st.session_state[SESSION_KEY_STEMS_DIR] = None
+    if SESSION_KEY_CLIP_BYTES not in st.session_state:
+        st.session_state[SESSION_KEY_CLIP_BYTES] = None
+    if SESSION_KEY_CLIP_LABEL not in st.session_state:
+        st.session_state[SESSION_KEY_CLIP_LABEL] = None
+    if SESSION_KEY_ZOOM_START_S not in st.session_state:
+        st.session_state[SESSION_KEY_ZOOM_START_S] = 0.0
+    if SESSION_KEY_ZOOM_END_S not in st.session_state:
+        st.session_state[SESSION_KEY_ZOOM_END_S] = 0.0
 
 
 def _render_sidebar() -> bool:
@@ -81,6 +94,8 @@ def _render_sidebar() -> bool:
         if st.button("🧹 Clear workspace"):
             clear_workspace(WORK_DIR)
             st.session_state[SESSION_KEY_STEMS_DIR] = None
+            st.session_state[SESSION_KEY_CLIP_BYTES] = None
+            st.session_state[SESSION_KEY_CLIP_LABEL] = None
             st.success("Workspace cleared.")
     return try_filters
 
@@ -452,12 +467,16 @@ def _get_plot_config(duration_s: float) -> ChordsPlotConfig:
             value=(0.0, float(min(duration_s, 20.0))),
             step=0.1,
         )
-        return ChordsPlotConfig(start_s=start_s, end_s=end_s)
+        st.session_state[SESSION_KEY_ZOOM_START_S] = float(start_s)
+        st.session_state[SESSION_KEY_ZOOM_END_S] = float(end_s)
+        return ChordsPlotConfig(start_s=float(start_s), end_s=float(end_s))
 
+    st.session_state[SESSION_KEY_ZOOM_START_S] = 0.0
+    st.session_state[SESSION_KEY_ZOOM_END_S] = float(duration_s)
     return ChordsPlotConfig(start_s=0.0, end_s=float(duration_s))
 
 
-def _render_chords_plot(output_lab: Path, input_wav: Path) -> bool:
+def _render_chords_plot(output_lab: Path, input_wav: Path) -> Optional[float]:
     """
     Render the Plotly visualization if chords are available.
 
@@ -470,26 +489,111 @@ def _render_chords_plot(output_lab: Path, input_wav: Path) -> bool:
 
     Returns
     -------
-    bool
-        True if the plot was rendered, otherwise False.
+    float or None
+        Audio duration in seconds if the plot was rendered, otherwise None.
     """
     if not output_lab.exists():
         st.info("No chords detected yet. Click “Predict chords” to generate chords.lab.")
-        return False
+        return None
 
     try:
         segments = read_chords_lab(output_lab)
         times_s, mono, duration_s = load_waveform_for_plot(input_wav)
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
         st.error(str(exc))
-        return False
+        return None
 
-    config = _get_plot_config(duration_s=duration_s)
+    config = _get_plot_config(duration_s=float(duration_s))
     fig = _build_chords_waveform_figure(
         times_s=times_s, mono=mono, segments=segments, config=config
     )
     st.plotly_chart(fig, use_container_width=True)
-    return True
+
+    return float(duration_s)
+
+
+def _render_playback_controls(input_wav: Path, duration_s: float) -> None:  # pylint: disable=too-many-locals
+    """
+    Render playback controls to listen to a short clip starting at a given time.
+
+    Parameters
+    ----------
+    input_wav : Path
+        Selected stem WAV path.
+    duration_s : float
+        Total audio duration in seconds.
+
+    Returns
+    -------
+    None
+    """
+    st.subheader("Playback")
+
+    # Read-only reference from the last zoom state.
+    zoom_start = float(st.session_state.get(SESSION_KEY_ZOOM_START_S, 0.0))
+    zoom_end = float(st.session_state.get(SESSION_KEY_ZOOM_END_S, float(duration_s)))
+
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        start_s = st.slider(
+            "Start (s)",
+            min_value=0.0,
+            max_value=float(duration_s),
+            value=float(min(max(zoom_start, 0.0), duration_s)),
+            step=0.1,
+        )
+
+    with col2:
+        clip_len = st.slider(
+            "Clip length (s)",
+            min_value=1.0,
+            max_value=30.0,
+            value=10.0,
+            step=1.0,
+        )
+
+    with col3:
+        st.write("")
+        st.write("")
+        play_clip = st.button("▶️ Play clip", type="secondary", use_container_width=True)
+
+    # Secondary quick action: play from zoom start without changing the slider manually.
+    play_zoom = st.button(
+        f"▶️ Play from zoom start ({zoom_start:.1f}s)",
+        type="secondary",
+        use_container_width=True,
+        disabled=zoom_end <= zoom_start,
+    )
+
+    if play_zoom:
+        start_s = zoom_start
+
+    if play_clip or play_zoom:
+        try:
+            clip_bytes, clip_duration = extract_wav_clip_bytes(
+                wav_path=input_wav,
+                start_s=float(start_s),
+                duration_s=float(clip_len),
+            )
+        except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:
+            st.error(str(exc))
+            return
+
+        if not clip_bytes:
+            st.warning("Clip start is beyond the end of the file.")
+            return
+
+        st.session_state[SESSION_KEY_CLIP_BYTES] = clip_bytes
+        st.session_state[SESSION_KEY_CLIP_LABEL] = (
+            f"{start_s:.1f}s → {start_s + clip_duration:.1f}s"
+        )
+
+    clip = st.session_state.get(SESSION_KEY_CLIP_BYTES)
+    clip_label = st.session_state.get(SESSION_KEY_CLIP_LABEL)
+    if clip:
+        if clip_label:
+            st.caption(f"Playing: {clip_label}")
+        st.audio(clip, format="audio/wav")
 
 
 def _render_chords_results_expander(output_lab: Path) -> None:
@@ -547,9 +651,12 @@ def _render_chords_tab() -> None:
 
     _maybe_run_chords_prediction(input_wav=input_wav, output_lab=output_lab, run_button=run_button)
 
-    plot_rendered = _render_chords_plot(output_lab=output_lab, input_wav=input_wav)
-    if plot_rendered:
-        _render_chords_results_expander(output_lab=output_lab)
+    audio_duration = _render_chords_plot(output_lab=output_lab, input_wav=input_wav)
+    if audio_duration is None:
+        return
+
+    _render_playback_controls(input_wav=input_wav, duration_s=audio_duration)
+    _render_chords_results_expander(output_lab=output_lab)
 
 
 def main() -> None:

@@ -14,6 +14,69 @@ from demucs_audiosplit.audiosplit import run_demucs
 from demucs_audiosplit.chords_predict import predict_chords_from_wave
 
 
+def extract_wav_clip_bytes(
+    wav_path: Path, start_s: float, duration_s: float
+) -> Tuple[bytes, float]:
+    """
+    Extract a WAV clip and return its bytes for playback.
+
+    Parameters
+    ----------
+    wav_path : Path
+        Input WAV path.
+    start_s : float
+        Clip start time in seconds.
+    duration_s : float
+        Desired clip duration in seconds.
+
+    Returns
+    -------
+    clip_bytes : bytes
+        WAV bytes suitable for Streamlit playback (st.audio).
+    clip_duration_s : float
+        Actual clip duration in seconds (may be shorter near EOF).
+
+    Raises
+    ------
+    FileNotFoundError
+        If the WAV file does not exist.
+    ValueError
+        If start_s or duration_s are invalid.
+    RuntimeError
+        If the audio cannot be read or written.
+    """
+    if not wav_path.exists():
+        raise FileNotFoundError(f"File not found: {wav_path}")
+    if start_s < 0.0:
+        raise ValueError("start_s must be >= 0")
+    if duration_s <= 0.0:
+        raise ValueError("duration_s must be > 0")
+
+    try:
+        audio, sample_rate = sf.read(wav_path, always_2d=True)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        raise RuntimeError(f"Failed to read audio: {wav_path}") from exc
+
+    n_samples = int(audio.shape[0])
+    sr = float(sample_rate)
+
+    start_idx = int(round(start_s * sr))
+    if start_idx >= n_samples:
+        return b"", 0.0
+
+    end_idx = min(n_samples, start_idx + int(round(duration_s * sr)))
+    clip = audio[start_idx:end_idx]
+
+    buffer = io.BytesIO()
+    try:
+        sf.write(buffer, clip, int(sr), format="WAV")
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        raise RuntimeError("Failed to write WAV clip") from exc
+
+    clip_duration = float(clip.shape[0]) / sr
+    return buffer.getvalue(), clip_duration
+
+
 @dataclass(frozen=True)
 class ChordSegment:
     """
