@@ -6,13 +6,17 @@ authors = [{ name = "Vincent LE MEUR", email = "vincent.le-meur@metroscope.tech"
 requires-python = ">=3.11"
 
 dependencies = [
-    "torch>=2.2.2",
+    # Intel macOS (x86_64): pin to a version that still has wheels for this platform
+    "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    # Other platforms (Linux, Windows, macOS arm64): allow newer versions
+    "torch>=2.2.2; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "demucs>=4.0.0",
     "scipy>=1.11.0",
     "numpy>=1.24.0",
     "soundfile>=0.12.1",
     "madmom @ git+https://github.com/CPJKU/madmom.git",
 ]
+
 
 [dependency-groups]
 dev = [
