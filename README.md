@@ -30,6 +30,12 @@ uv sync
 uv pip install -e .
 ```
 
+Activate pre-commit for dev profiles : 
+
+```bash
+uv run pre-commit install
+```
+
 
 ## 🎚️ Usage
 
