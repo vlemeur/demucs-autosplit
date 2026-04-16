@@ -1,6 +1,6 @@
 from pathlib import Path
-from demucs_audiosplit.chords_predict import predict_chords_from_wave
 
+from demucs_audiosplit.chords_predict import predict_chords_from_wave
 
 TRACK_NAME = "looking_for_love"
 STEM_NAME = "other.wav"
