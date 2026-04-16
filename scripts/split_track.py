@@ -23,9 +23,7 @@ def main() -> None:
         return
 
     for file in audio_files:
-        run_demucs(
-            file_path=file, output_dir=OUTPUT_DIR, try_filter_others=TRY_FILTERS_OTHERS
-        )
+        run_demucs(file_path=file, output_dir=OUTPUT_DIR, try_filter_others=TRY_FILTERS_OTHERS)
 
     logger.info("✅ All files processed.")
 
