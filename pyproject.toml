@@ -8,8 +8,11 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
     # Intel macOS (x86_64): pin to a version that still has wheels for this platform
     "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torchaudio==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     # Other platforms (Linux, Windows, macOS arm64): allow newer versions
-    "torch>=2.2.2; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    # Pin below 2.9 to avoid the new TorchCodec/FFmpeg runtime requirement.
+    "torch==2.8.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchaudio==2.8.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "demucs>=4.0.0",
     "scipy>=1.11.0",
     "numpy>=1.24.0,<2",
@@ -25,9 +28,6 @@ dependencies = [
 dev = [
     "pre-commit>=3.7.0",
     "ruff>=0.4.10",
-    "mypy>=1.10.0",
-    "pylint>=3.2.5",
-    "codespell>=2.3.0",
 ]
 
 [build-system]
@@ -43,48 +43,22 @@ package-dir = { "" = "src" }
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+src = ["src", "scripts"]
 exclude = ["outputs", ".venv"]
-select = ["E", "F", "I"]
 fix = true
 
-# ---------------------
-# Ruff formatter
-# ---------------------
+[tool.ruff.lint]
+select = [
+    "B",
+    "E",
+    "F",
+    "I",
+    "UP",
+    "W",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["demucs_audiosplit"]
+
 [tool.ruff.format]
 quote-style = "double"
-
-# ---------------------
-# Mypy (default / permissif)
-# ---------------------
-[tool.mypy]
-python_version = "3.11"
-warn_unused_configs = true
-ignore_missing_imports = true
-
-# ---------------------
-# Pylint (default-friendly)
-# ---------------------
-[tool.pylint.main]
-py-version = "3.11"
-ignore = ["outputs", ".venv"]
-disable = [
-  "import-error",
-]
-
-[tool.pylint.format]
-max-line-length = 100
-
-[tool.pylint.messages_control]
-disable = [
-    "C0114", # missing-module-docstring
-    "C0115", # missing-class-docstring
-    "C0116", # missing-function-docstring
-]
-
-# ---------------------
-# Codespell
-# ---------------------
-[tool.codespell]
-skip = ".venv,outputs,uv.lock"
-check-filenames = true
-check-hidden = true

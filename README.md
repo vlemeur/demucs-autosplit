@@ -29,16 +29,34 @@ cd demucs-autosplit
 ### 2. Set up the environment
 
 ```bash
-uv venv --python 3.11
+uv venv
 source .venv/bin/activate
 uv sync
 uv pip install -e .
+```
+
+This project pins `torch` / `torchaudio` to versions that avoid the newer
+`torchcodec` runtime requirement on most platforms. If your virtualenv was
+created before that change, refresh it with:
+
+```bash
+uv sync
 ```
 
 ### 3. (Optional) Enable pre-commit hooks
 
 ```bash
 uv run pre-commit install
+```
+
+### 4. Quality checks
+
+Run the common quality commands with:
+
+```bash
+make format
+make lint
+make check
 ```
 
 ---
@@ -69,9 +87,10 @@ From the interface, you can:
 
 ## 🧠 Notes
 
-* The application uses Demucs via the system command (`demucs` must be available in your environment).
+* The application runs Demucs from the active Python environment.
 * Output files are stored in a local workspace directory (`.streamlit_workdir/`).
 * NumPy is pinned to `<2` for compatibility with PyTorch / torchaudio.
+* For portability, the project pins `torchaudio` below `2.9` on non-Intel platforms.
 
 ---
 

@@ -3,10 +3,10 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
 
 import plotly.graph_objects as go
-import streamlit as st  # pylint: disable=import-error
+import streamlit as st
+
 from service import (
     clear_workspace,
     extract_wav_clip_bytes,
@@ -31,8 +31,8 @@ UPLOAD_DIR: Path = WORK_DIR / "uploads"
 OUTPUT_DIR: Path = WORK_DIR / "outputs"
 
 TRY_FILTERS_OTHERS_DEFAULT: bool = False
-SUPPORTED_EXT: Set[str] = {".wav", ".mp3"}
-STEMS: List[str] = ["drums", "bass", "other", "vocals"]
+SUPPORTED_EXT: set[str] = {".wav", ".mp3"}
+STEMS: list[str] = ["drums", "bass", "other", "vocals"]
 
 SESSION_KEY_STEMS_DIR: str = "stems_dir"
 SESSION_KEY_CLIP_BYTES: str = "clip_bytes"
@@ -175,7 +175,7 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
     ]
 
     simplified_labels = sorted({_simplify_chord_label(seg.label) for seg in segments})
-    label_to_color: Dict[str, str] = {
+    label_to_color: dict[str, str] = {
         chord_label: palette[i % len(palette)] for i, chord_label in enumerate(simplified_labels)
     }
 
@@ -341,7 +341,7 @@ def _render_split_tab(try_filters: bool) -> None:
             st.audio(stems_bytes[stem], format="audio/wav")
 
 
-def _get_stems_dir() -> Optional[Path]:
+def _get_stems_dir() -> Path | None:
     """
     Get the stems directory stored in the session state.
 
@@ -364,7 +364,7 @@ def _get_stems_dir() -> Optional[Path]:
     return stems_dir
 
 
-def _get_stems_paths(stems_dir: Path) -> Optional[Dict[str, Path]]:
+def _get_stems_paths(stems_dir: Path) -> dict[str, Path] | None:
     """
     Collect existing stem wav paths for chord prediction.
 
@@ -378,14 +378,14 @@ def _get_stems_paths(stems_dir: Path) -> Optional[Dict[str, Path]]:
     dict of str to Path or None
         Mapping {stem_name: wav_path}, or None if no stems are found.
     """
-    stems_paths: Dict[str, Path] = list_stems_wav(stems_dir=stems_dir, stems=STEMS)
+    stems_paths: dict[str, Path] = list_stems_wav(stems_dir=stems_dir, stems=STEMS)
     if not stems_paths:
         st.warning("No stems were found in the stored stems folder.")
         return None
     return stems_paths
 
 
-def _render_chords_controls(stems_paths: Dict[str, Path]) -> Tuple[str, bool]:
+def _render_chords_controls(stems_paths: dict[str, Path]) -> tuple[str, bool]:
     """
     Render stem selection and action button.
 
@@ -476,7 +476,7 @@ def _get_plot_config(duration_s: float) -> ChordsPlotConfig:
     return ChordsPlotConfig(start_s=0.0, end_s=float(duration_s))
 
 
-def _render_chords_plot(output_lab: Path, input_wav: Path) -> Optional[float]:
+def _render_chords_plot(output_lab: Path, input_wav: Path) -> float | None:
     """
     Render the Plotly visualization if chords are available.
 
@@ -512,7 +512,7 @@ def _render_chords_plot(output_lab: Path, input_wav: Path) -> Optional[float]:
     return float(duration_s)
 
 
-def _render_playback_controls(input_wav: Path, duration_s: float) -> None:  # pylint: disable=too-many-locals
+def _render_playback_controls(input_wav: Path, duration_s: float) -> None:
     """
     Render playback controls to listen to a short clip starting at a given time.
 

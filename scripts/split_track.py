@@ -3,7 +3,6 @@ from pathlib import Path
 from demucs_audiosplit import logger
 from demucs_audiosplit.audiosplit import find_audio_files, run_demucs
 
-
 AUDIO_DIR = Path("audio")
 OUTPUT_DIR = Path("outputs")
 TRY_FILTERS_OTHERS = False

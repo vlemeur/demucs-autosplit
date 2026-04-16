@@ -6,17 +6,17 @@ import io
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import soundfile as sf
+
 from demucs_audiosplit.audiosplit import run_demucs
 from demucs_audiosplit.chords_predict import predict_chords_from_wave
 
 
 def extract_wav_clip_bytes(
     wav_path: Path, start_s: float, duration_s: float
-) -> Tuple[bytes, float]:
+) -> tuple[bytes, float]:
     """
     Extract a WAV clip and return its bytes for playback.
 
@@ -54,7 +54,7 @@ def extract_wav_clip_bytes(
 
     try:
         audio, sample_rate = sf.read(wav_path, always_2d=True)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except Exception as exc:
         raise RuntimeError(f"Failed to read audio: {wav_path}") from exc
 
     n_samples = int(audio.shape[0])
@@ -70,7 +70,7 @@ def extract_wav_clip_bytes(
     buffer = io.BytesIO()
     try:
         sf.write(buffer, clip, int(sr), format="WAV")
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except Exception as exc:
         raise RuntimeError("Failed to write WAV clip") from exc
 
     clip_duration = float(clip.shape[0]) / sr
@@ -97,7 +97,7 @@ class ChordSegment:
     label: str
 
 
-def read_chords_lab(lab_path: Path) -> List[ChordSegment]:
+def read_chords_lab(lab_path: Path) -> list[ChordSegment]:
     """
     Read a chords .lab file with lines formatted as: <start> <end> <label>.
 
@@ -121,7 +121,7 @@ def read_chords_lab(lab_path: Path) -> List[ChordSegment]:
     if not lab_path.exists():
         raise FileNotFoundError(f"File not found: {lab_path}")
 
-    segments: List[ChordSegment] = []
+    segments: list[ChordSegment] = []
     for raw_line in lab_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line:
@@ -146,7 +146,7 @@ def read_chords_lab(lab_path: Path) -> List[ChordSegment]:
 def load_waveform_for_plot(
     wav_path: Path,
     max_points: int = 200_000,
-) -> Tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, float]:
     """
     Load a wav file and return a downsampled mono waveform for plotting.
 
@@ -187,7 +187,7 @@ def load_waveform_for_plot(
     try:
         # always_2d ensures shape (n_samples, n_channels)
         audio, sample_rate = sf.read(wav_path, always_2d=True)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except Exception as exc:
         raise RuntimeError(f"Failed to read audio: {wav_path}") from exc
 
     if audio.size == 0:
@@ -248,7 +248,7 @@ def save_bytes_to_file(data: bytes, dest_path: Path) -> Path:
     return dest_path
 
 
-def validate_extension(file_path: Path, supported_ext: Set[str]) -> bool:
+def validate_extension(file_path: Path, supported_ext: set[str]) -> bool:
     """
     Check whether a file extension is supported.
 
@@ -293,7 +293,7 @@ def run_split(audio_path: Path, output_dir: Path, try_filter_others: bool) -> No
     )
 
 
-def find_stems_dir(output_root: Path, track_name: str, stems: List[str]) -> Optional[Path]:
+def find_stems_dir(output_root: Path, track_name: str, stems: list[str]) -> Path | None:
     """
     Locate the directory containing all stem wav files for a given track.
 
@@ -314,7 +314,7 @@ def find_stems_dir(output_root: Path, track_name: str, stems: List[str]) -> Opti
     Path or None
         Directory containing all stems, or None if not found.
     """
-    candidates: List[Path] = []
+    candidates: list[Path] = []
 
     # Heuristic 1: directories matching track_name
     for p in output_root.rglob(track_name):
@@ -333,7 +333,7 @@ def find_stems_dir(output_root: Path, track_name: str, stems: List[str]) -> Opti
         present = sum((directory / f"{stem}.wav").exists() for stem in stems)
         return present * 100 - len(directory.parts)
 
-    best: Optional[Path] = None
+    best: Path | None = None
     best_score = -(10**9)
 
     for directory in candidates:
@@ -347,7 +347,7 @@ def find_stems_dir(output_root: Path, track_name: str, stems: List[str]) -> Opti
     return None
 
 
-def read_stems(stems_dir: Path, stems: List[str]) -> Dict[str, bytes]:
+def read_stems(stems_dir: Path, stems: list[str]) -> dict[str, bytes]:
     """
     Read stem wav files into memory.
 
@@ -363,13 +363,13 @@ def read_stems(stems_dir: Path, stems: List[str]) -> Dict[str, bytes]:
     dict of str to bytes
         Mapping {stem_name: wav_bytes}.
     """
-    data: Dict[str, bytes] = {}
+    data: dict[str, bytes] = {}
     for stem in stems:
         data[stem] = (stems_dir / f"{stem}.wav").read_bytes()
     return data
 
 
-def zip_stems(stems_dir: Path, stems: List[str]) -> bytes:
+def zip_stems(stems_dir: Path, stems: list[str]) -> bytes:
     """
     Create an in-memory ZIP archive containing all stems.
 
@@ -420,7 +420,7 @@ def clear_workspace(work_dir: Path) -> None:
             pass
 
 
-def list_stems_wav(stems_dir: Path, stems: List[str]) -> Dict[str, Path]:
+def list_stems_wav(stems_dir: Path, stems: list[str]) -> dict[str, Path]:
     """
     List existing stem wav files in a directory.
 
@@ -436,7 +436,7 @@ def list_stems_wav(stems_dir: Path, stems: List[str]) -> Dict[str, Path]:
     dict of str to Path
         Mapping {stem_name: wav_path} for stems that exist on disk.
     """
-    existing: Dict[str, Path] = {}
+    existing: dict[str, Path] = {}
     for stem in stems:
         wav_path = stems_dir / f"{stem}.wav"
         if wav_path.exists():

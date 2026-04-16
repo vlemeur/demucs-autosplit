@@ -1,12 +1,12 @@
 import subprocess
+import sys
 from pathlib import Path
-from typing import List
 
 from demucs_audiosplit import logger
 from demucs_audiosplit.filters import apply_simple_filters
 
 
-def find_audio_files(directory: Path, extensions: List[str]) -> List[Path]:
+def find_audio_files(directory: Path, extensions: list[str]) -> list[Path]:
     """
     Find all audio files in a given directory with specified extensions.
 
@@ -54,8 +54,8 @@ def run_demucs(file_path: Path, output_dir: Path, try_filter_others: bool = Fals
     logger.info("🔍 Separating: %s", file_path.name)
 
     try:
-        subprocess.run(
-            ["demucs", "--out", str(output_dir), str(file_path)],
+        completed = subprocess.run(
+            [sys.executable, "-m", "demucs.separate", "--out", str(output_dir), str(file_path)],
             check=True,
             capture_output=True,
             text=True,
@@ -63,16 +63,19 @@ def run_demucs(file_path: Path, output_dir: Path, try_filter_others: bool = Fals
     except subprocess.CalledProcessError as exc:
         # Use error level for failures
         logger.error(
-            "❌ Failed to process %s (returncode=%s). stderr=%s",
+            "❌ Failed to process %s (returncode=%s). stdout=%s stderr=%s",
             file_path.name,
             exc.returncode,
+            (exc.stdout or "").strip(),
             (exc.stderr or "").strip(),
         )
         return
     except FileNotFoundError:
-        # demucs executable not found
-        logger.error("❌ 'demucs' command not found. Is it installed and on PATH?")
+        logger.error("❌ Demucs is not installed in the current Python environment.")
         return
+
+    if completed.stdout.strip():
+        logger.info("%s", completed.stdout.strip())
 
     if not try_filter_others:
         return
