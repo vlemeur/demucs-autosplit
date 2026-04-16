@@ -3,7 +3,7 @@ name = "demucs-autosplit"
 version = "0.1.0"
 description = "Batch stem separation using Demucs"
 authors = [{ name = "Vincent LE MEUR", email = "vincent.le-meur@metroscope.tech" }]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 
 dependencies = [
     # Intel macOS (x86_64): pin to a version that still has wheels for this platform
