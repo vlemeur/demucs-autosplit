@@ -5,6 +5,7 @@ set default-list := true
 
 # Variables for venv and tools
 PYTHON := ".venv/bin/python"
+PREK := ".venv/bin/prek"
 
 # Check code style and formatting (without applying fixes)
 lint:
@@ -16,6 +17,6 @@ format:
     {{PYTHON}} -m ruff check . --fix
     {{PYTHON}} -m ruff format .
 
-# Run pre-commit hooks on all files
+# Run prek hooks on all files
 check:
-    {{PYTHON}} -m pre_commit run --all-files
+    {{PREK}} run --all-files

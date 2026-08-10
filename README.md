@@ -43,10 +43,10 @@ created before that change, refresh it with:
 uv sync
 ```
 
-### 3. (Optional) Enable pre-commit hooks
+### 3. (Optional) Enable prek hooks
 
 ```bash
-uv run pre-commit install
+uv run prek install
 ```
 
 ### 4. Quality checks
