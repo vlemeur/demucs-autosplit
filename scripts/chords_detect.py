@@ -71,7 +71,10 @@ def main() -> None:
         type=str,
         default=DEFAULT_MODEL,
         choices=DEMUCS_MODELS,
-        help=f"Demucs model used. Options: {', '.join(DEMUCS_MODELS)}",
+        help=(
+            f"Demucs v4 model used. Options: {', '.join(DEMUCS_MODELS)}. "
+            "Must match the model used for stem separation."
+        ),
     )
     parser.add_argument(
         "--method",

@@ -32,7 +32,11 @@ def main() -> None:
         type=str,
         default=DEFAULT_MODEL,
         choices=DEMUCS_MODELS,
-        help=f"Demucs model to use. Options: {', '.join(DEMUCS_MODELS)}",
+        help=(
+            f"Demucs v4 model to use. Options: {', '.join(DEMUCS_MODELS)}. "
+            "htdemucs_ft is 4x slower but better quality. "
+            "htdemucs_6s separates into 6 stems (includes guitar and piano)."
+        ),
     )
     parser.add_argument(
         "--filter-others",
@@ -43,8 +47,11 @@ def main() -> None:
     parser.add_argument(
         "--segment",
         type=int,
-        default=10,
-        help="Segment length in seconds for GPU processing (default: 10)",
+        default=7,
+        help=(
+            "Segment length in seconds for GPU processing (default: 7). "
+            "Hybrid Transformer models support max 7.8s."
+        ),
     )
     parser.add_argument(
         "--device",

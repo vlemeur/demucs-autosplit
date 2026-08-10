@@ -33,14 +33,11 @@ OUTPUT_DIR: Path = WORK_DIR / "outputs"
 TRY_FILTERS_OTHERS_DEFAULT: bool = False
 SUPPORTED_EXT: set[str] = {".wav", ".mp3"}
 
-# Model-specific stems
+# Model-specific stems for Demucs v4
 MODEL_STEMS: dict[str, list[str]] = {
     "htdemucs": ["drums", "bass", "other", "vocals"],
     "htdemucs_ft": ["drums", "bass", "other", "vocals"],
     "htdemucs_6s": ["drums", "bass", "other", "vocals", "guitar", "piano"],
-    "hdemucs_mmi": ["drums", "bass", "other", "vocals"],
-    "mdx": ["drums", "bass", "other", "vocals"],
-    "mdx_extra": ["drums", "bass", "other", "vocals"],
 }
 
 SESSION_KEY_STEMS_DIR: str = "stems_dir"
@@ -102,12 +99,9 @@ def _render_sidebar() -> tuple[bool, str]:
         # Model selection
         st.subheader("Demucs Model")
         model_tooltip = {
-            "htdemucs": "Default Hybrid Transformer model (9.0 dB SDR)",
-            "htdemucs_ft": "Fine-tuned version, 4x slower but better quality (9.2 dB SDR)",
-            "htdemucs_6s": "6 sources: drums, bass, vocals, other, guitar, piano",
-            "hdemucs_mmi": "Hybrid Demucs v3 retrained on more data",
-            "mdx": "Original MDX challenge winning model",
-            "mdx_extra": "MDX with extra training data",
+            "htdemucs": "Default Hybrid Transformer model - 9.0 dB SDR, best balance",
+            "htdemucs_ft": "Fine-tuned Hybrid Transformer - 9.2 dB SDR, 4x slower",
+            "htdemucs_6s": "6-source model: drums, bass, vocals, other, guitar, piano",
         }
 
         selected_model = st.selectbox(
@@ -391,12 +385,17 @@ def _get_stems_dir() -> Path | None:
     Path or None
         Stems directory if available and existing, otherwise None.
     """
+    from urllib.parse import unquote
+
     stems_dir_str = st.session_state.get(SESSION_KEY_STEMS_DIR)
     if stems_dir_str is None:
         st.info("Run a stem separation first, then come back here to detect chords.")
         return None
 
+    # Streamlit may encode spaces as %20 in session state, decode them
+    stems_dir_str = unquote(stems_dir_str)
     stems_dir = Path(stems_dir_str)
+
     if not stems_dir.exists():
         st.warning("Stored stems folder does not exist anymore. Please run a split again.")
         st.session_state[SESSION_KEY_STEMS_DIR] = None
@@ -543,9 +542,21 @@ def _render_chords_plot(output_lab: Path, input_wav: Path) -> float | None:
     try:
         segments = read_chords_lab(output_lab)
         times_s, mono, duration_s = load_waveform_for_plot(input_wav)
-    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
-        st.error(str(exc))
+    except FileNotFoundError as exc:
+        st.error(f"File not found: {exc}")
         return None
+    except (OSError, RuntimeError, ValueError) as exc:
+        st.error(f"Error loading data: {exc}")
+        return None
+
+    # Check if any chords were detected
+    if not segments:
+        st.warning(
+            "No chords were detected in this stem. "
+            "This can happen if the stem is silent or contains only drums/bass. "
+            "Try selecting a different stem (e.g., 'other' for harmonic instruments)."
+        )
+        return float(duration_s)
 
     config = _get_plot_config(duration_s=float(duration_s))
     fig = _build_chords_waveform_figure(

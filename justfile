@@ -31,3 +31,7 @@ all:
     just lint
     just type-check
     just check
+
+# Run the Streamlit application locally
+run:
+    {{PYTHON}} -m streamlit run src/ui.py

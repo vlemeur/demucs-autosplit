@@ -275,7 +275,7 @@ def run_split(
     output_dir: Path,
     try_filter_others: bool = False,
     model: str = "htdemucs",
-    segment: int = 10,
+    segment: int = 7,
     device: str = "auto",
     two_stems: str | None = None,
     overlap: float = 0.25,
@@ -297,7 +297,8 @@ def run_split(
     model : str, optional
         Demucs model to use. Default is "htdemucs".
     segment : int, optional
-        Segment length in seconds for GPU processing. Default is 10.
+        Segment length in seconds for GPU processing. Default is 7.
+        **Note**: Hybrid Transformer models support max 7.8s.
     device : str, optional
         Device to use: "cpu", "cuda", or "auto". Default is "auto".
     two_stems : str or None, optional
