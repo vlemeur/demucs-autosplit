@@ -1,5 +1,5 @@
 # justfile
-# Modern alternative to Makefile for demucs-autosplit
+# Modern alternative to Makefile for Music Workbench
 
 set default-list := true
 

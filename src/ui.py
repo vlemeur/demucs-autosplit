@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+import threading
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import plotly.graph_objects as go
 import streamlit as st
 
 from demucs_audiosplit.audiosplit import DEFAULT_MODEL, DEMUCS_MODELS
+from midi import list_midi_devices
+from midi.chord_detector import ChordDetector
+from midi.handler import MIDI_NOTE_TO_NAME
 from service import (
     clear_workspace,
     extract_wav_clip_bytes,
@@ -24,7 +29,7 @@ from service import (
     zip_stems,
 )
 
-APP_TITLE: str = "🥷🏻 Demucs Audio Splitter"
+APP_TITLE: str = "🎵 Music Workbench"
 
 WORK_DIR: Path = Path(".streamlit_workdir")
 UPLOAD_DIR: Path = WORK_DIR / "uploads"
@@ -39,11 +44,25 @@ MODEL_STEMS: dict[str, list[str]] = {
     "htdemucs_6s": ["drums", "bass", "other", "vocals", "guitar", "piano"],
 }
 
+# Session state keys
 SESSION_KEY_STEMS_DIR: str = "stems_dir"
 SESSION_KEY_CLIP_BYTES: str = "clip_bytes"
 SESSION_KEY_CLIP_LABEL: str = "clip_label"
 SESSION_KEY_ZOOM_START_S: str = "zoom_start_s"
 SESSION_KEY_ZOOM_END_S: str = "zoom_end_s"
+
+# Live Harmony session state keys
+SESSION_KEY_LIVE_NOTES: str = "live_notes"
+SESSION_KEY_LIVE_CHORD: str = "live_chord"
+SESSION_KEY_LIVE_CHORD_ALTS: str = "live_chord_alts"
+SESSION_KEY_LIVE_CONFIDENCE: str = "live_confidence"
+SESSION_KEY_LIVE_RUNNING: str = "live_running"
+SESSION_KEY_LIVE_THREAD: str = "live_thread"
+SESSION_KEY_LIVE_STOP_EVENT: str = "live_stop_event"
+SESSION_KEY_LIVE_SNAPSHOT: str = "live_snapshot"
+SESSION_KEY_LIVE_ERROR: str = "live_error"
+SESSION_KEY_CHORD_SEQ: str = "chord_sequence"
+LIVE_REFRESH_INTERVAL_S: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -61,6 +80,55 @@ class ChordsPlotConfig:
 
     start_s: float
     end_s: float
+
+
+@dataclass
+class LiveHarmonySnapshot:
+    """Thread-safe snapshot for the Live Harmony listener state."""
+
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    notes: list[str] = field(default_factory=list)
+    chord: str | None = None
+    alternatives: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    error: str | None = None
+
+    def update(
+        self,
+        *,
+        notes: list[str],
+        chord: str | None,
+        alternatives: list[str],
+        confidence: float,
+    ) -> None:
+        with self.lock:
+            self.notes = notes
+            self.chord = chord
+            self.alternatives = alternatives
+            self.confidence = confidence
+            self.error = None
+
+    def set_error(self, message: str) -> None:
+        with self.lock:
+            self.error = message
+
+    def reset(self) -> None:
+        with self.lock:
+            self.notes = []
+            self.chord = None
+            self.alternatives = []
+            self.confidence = 0.0
+            self.error = None
+
+    def read(self) -> tuple[list[str], str | None, list[str], float, str | None]:
+        with self.lock:
+            return (
+                self.notes.copy(),
+                self.chord,
+                self.alternatives.copy(),
+                self.confidence,
+                self.error,
+            )
 
 
 def _init_session_state() -> None:
@@ -709,6 +777,376 @@ def _render_chords_tab() -> None:
     _render_chords_results_expander(output_lab=output_lab)
 
 
+# =============================================================================
+# Live Harmony Tab Functions
+# =============================================================================
+
+
+def _init_live_harmony_state() -> None:
+    """
+    Initialize session state for Live Harmony tab.
+
+    Returns
+    -------
+    None
+    """
+    if SESSION_KEY_LIVE_NOTES not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_NOTES] = []
+    if SESSION_KEY_LIVE_CHORD not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_CHORD] = None
+    if SESSION_KEY_LIVE_CHORD_ALTS not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_CHORD_ALTS] = []
+    if SESSION_KEY_LIVE_CONFIDENCE not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_CONFIDENCE] = 0.0
+    if SESSION_KEY_LIVE_RUNNING not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_RUNNING] = False
+    if SESSION_KEY_LIVE_THREAD not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_THREAD] = None
+    if SESSION_KEY_LIVE_STOP_EVENT not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_STOP_EVENT] = None
+    if SESSION_KEY_LIVE_SNAPSHOT not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_SNAPSHOT] = LiveHarmonySnapshot()
+    if SESSION_KEY_LIVE_ERROR not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_ERROR] = None
+    if SESSION_KEY_CHORD_SEQ not in st.session_state:
+        st.session_state[SESSION_KEY_CHORD_SEQ] = []
+
+
+def _reset_live_harmony_session_values() -> None:
+    """Clear live harmony values stored in the Streamlit session."""
+    st.session_state[SESSION_KEY_LIVE_NOTES] = []
+    st.session_state[SESSION_KEY_LIVE_CHORD] = None
+    st.session_state[SESSION_KEY_LIVE_CHORD_ALTS] = []
+    st.session_state[SESSION_KEY_LIVE_CONFIDENCE] = 0.0
+    st.session_state[SESSION_KEY_LIVE_ERROR] = None
+
+
+def _sync_live_harmony_snapshot() -> None:
+    """Copy the listener snapshot into Streamlit session state."""
+    snapshot = st.session_state.get(SESSION_KEY_LIVE_SNAPSHOT)
+    if snapshot is None:
+        return
+
+    notes, chord, alternatives, confidence, error = snapshot.read()
+    st.session_state[SESSION_KEY_LIVE_NOTES] = notes
+    st.session_state[SESSION_KEY_LIVE_CHORD] = chord
+    st.session_state[SESSION_KEY_LIVE_CHORD_ALTS] = alternatives
+    st.session_state[SESSION_KEY_LIVE_CONFIDENCE] = confidence
+    st.session_state[SESSION_KEY_LIVE_ERROR] = error
+
+
+def _stop_midi_listener() -> None:
+    """Stop the MIDI listener thread if running."""
+    stop_event = st.session_state.get(SESSION_KEY_LIVE_STOP_EVENT)
+    if stop_event is not None:
+        stop_event.set()
+
+    thread = st.session_state.get(SESSION_KEY_LIVE_THREAD)
+    if thread and thread.is_alive():
+        thread.join(timeout=1.0)
+
+    snapshot = st.session_state.get(SESSION_KEY_LIVE_SNAPSHOT)
+    if snapshot is not None:
+        snapshot.reset()
+
+    st.session_state[SESSION_KEY_LIVE_RUNNING] = False
+    st.session_state[SESSION_KEY_LIVE_THREAD] = None
+    st.session_state[SESSION_KEY_LIVE_STOP_EVENT] = None
+    _reset_live_harmony_session_values()
+
+
+def _midi_listener_thread(
+    device_name: str,
+    detector: ChordDetector,
+    stop_event: threading.Event,
+    snapshot: LiveHarmonySnapshot,
+) -> None:
+    """
+    Background thread that listens to MIDI input and updates session state.
+
+    Parameters
+    ----------
+    device_name : str
+        Name of the MIDI device to listen to.
+    detector : ChordDetector
+        Chord detector instance.
+
+    Returns
+    -------
+    None
+    """
+    import mido
+
+    active_notes: dict[int, int] = {}
+
+    try:
+        # mido types are not recognized by ty, using type: ignore
+        with mido.open_input(device_name) as port:  # type: ignore
+            while not stop_event.is_set():
+                try:
+                    state_changed = False
+                    for msg in port.iter_pending():
+                        if msg.type == "note_on" and msg.velocity > 0:
+                            active_notes[msg.note] = msg.velocity
+                            state_changed = True
+                        elif msg.type == "note_off" or (
+                            msg.type == "note_on" and msg.velocity == 0
+                        ):
+                            active_notes.pop(msg.note, None)
+                            state_changed = True
+
+                    if state_changed:
+                        note_numbers = sorted(active_notes.keys())
+                        note_names = [
+                            MIDI_NOTE_TO_NAME[n]
+                            for n in note_numbers
+                            if 0 <= n < len(MIDI_NOTE_TO_NAME)
+                        ]
+                        result = detector.detect(note_names)
+                        snapshot.update(
+                            notes=note_names,
+                            chord=result.primary_chord,
+                            alternatives=result.alternative_chords,
+                            confidence=result.confidence,
+                        )
+
+                    time.sleep(0.01)
+
+                except Exception as exc:
+                    snapshot.set_error(f"MIDI error: {exc}")
+                    stop_event.set()
+                    break
+
+    except Exception as exc:
+        snapshot.set_error(f"Failed to open MIDI device: {exc}")
+        stop_event.set()
+
+
+def _start_midi_listener(device_name: str) -> None:
+    """
+    Start the MIDI listener in a background thread.
+
+    Parameters
+    ----------
+    device_name : str
+        Name of the MIDI device to connect to.
+
+    Returns
+    -------
+    None
+    """
+    # Stop any existing listener first
+    _stop_midi_listener()
+
+    detector = ChordDetector(min_notes=2, min_match_ratio=0.6)
+    stop_event = threading.Event()
+    snapshot = st.session_state[SESSION_KEY_LIVE_SNAPSHOT]
+    snapshot.reset()
+
+    # Start new thread
+    thread = threading.Thread(
+        target=_midi_listener_thread,
+        args=(device_name, detector, stop_event, snapshot),
+        daemon=True,
+    )
+    st.session_state[SESSION_KEY_LIVE_THREAD] = thread
+    st.session_state[SESSION_KEY_LIVE_STOP_EVENT] = stop_event
+    st.session_state[SESSION_KEY_LIVE_RUNNING] = True
+    thread.start()
+
+
+def _render_live_harmony_tab() -> None:
+    """
+    Render the Live Harmony tab for real-time MIDI chord detection.
+
+    Returns
+    -------
+    None
+    """
+    _init_live_harmony_state()
+    _sync_live_harmony_snapshot()
+
+    live_thread = st.session_state.get(SESSION_KEY_LIVE_THREAD)
+    if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False) and (
+        live_thread is None or not live_thread.is_alive()
+    ):
+        st.session_state[SESSION_KEY_LIVE_RUNNING] = False
+
+    st.header("🎹 Live Harmony")
+    st.markdown(
+        """
+        Connect your MIDI keyboard and play chords. The app will detect the notes
+        you're playing and identify the chord in real-time.
+        """
+    )
+
+    # Device selection
+    st.subheader("🎛️ MIDI Settings")
+
+    devices = list_midi_devices()
+
+    if not devices:
+        st.warning(
+            "No MIDI input devices found. "
+            "Make sure your keyboard is connected and the driver is installed."
+        )
+        st.markdown(
+            """
+            **Troubleshooting:**
+            - On macOS: Check Audio MIDI Setup app to verify your device is connected
+            - Make sure your keyboard is set to send MIDI (not just audio)
+            - Try closing and reopening other MIDI applications
+            """
+        )
+        return
+
+    col1, col2, col3 = st.columns([2, 1, 1])
+
+    with col1:
+        selected_device = st.selectbox(
+            "Select MIDI Input Device",
+            devices,
+            index=0,
+            help="Choose your MIDI keyboard or controller",
+        )
+
+    with col2:
+        if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
+            if st.button("⏹️ Stop", type="secondary", use_container_width=True):
+                _stop_midi_listener()
+                st.success("MIDI listener stopped")
+        else:
+            if st.button("▶️ Start", type="primary", use_container_width=True):
+                _start_midi_listener(selected_device)
+                st.success(f"Listening to {selected_device}...")
+
+    with col3:
+        show_alts = st.toggle("Show alternatives", value=False)
+
+    st.markdown("---")
+
+    # Live detection display
+    st.subheader("🎵 Live Detection")
+
+    live_error = st.session_state.get(SESSION_KEY_LIVE_ERROR)
+    if live_error:
+        st.error(live_error)
+
+    if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
+        st.caption(f"Listening to `{selected_device}`...")
+
+    current_notes = st.session_state.get(SESSION_KEY_LIVE_NOTES, [])
+    current_chord = st.session_state.get(SESSION_KEY_LIVE_CHORD, None)
+    current_alts = st.session_state.get(SESSION_KEY_LIVE_CHORD_ALTS, [])
+    confidence = st.session_state.get(SESSION_KEY_LIVE_CONFIDENCE, 0.0)
+
+    # Display in columns
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        if current_notes:
+            st.markdown("**Current Notes:**")
+            # Group notes by octave for better readability
+            notes_by_octave: dict[str, list[str]] = {}
+            for note in current_notes:
+                if len(note) > 1 and note[-1].isdigit():
+                    octave = note[-1]
+                    base = note[:-1]
+                else:
+                    octave = "?"
+                    base = note
+                if octave not in notes_by_octave:
+                    notes_by_octave[octave] = []
+                notes_by_octave[octave].append(base)
+
+            for octave in sorted(notes_by_octave.keys()):
+                notes = sorted(notes_by_octave[octave])
+                st.markdown(f"- **Octave {octave}:** {', '.join(notes)}")
+        else:
+            st.info("No notes being played. Play something on your keyboard!")
+
+    with col2:
+        if current_chord:
+            st.success(f"**Detected Chord:** {current_chord}")
+            st.caption(f"Confidence: {confidence:.1%}")
+        else:
+            if current_notes:
+                st.warning("Notes detected but no chord recognized")
+
+    if show_alts and current_alts:
+        st.markdown("**Alternative Chords:**")
+        for alt in current_alts[:5]:  # Show top 5 alternatives
+            st.markdown(f"- {alt}")
+
+    st.markdown("---")
+
+    # Chord sequence editor
+    _render_chord_sequence_editor()
+
+    if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
+        time.sleep(LIVE_REFRESH_INTERVAL_S)
+        st.rerun()
+
+
+def _render_chord_sequence_editor() -> None:
+    """
+    Render the chord sequence editor section.
+
+    Returns
+    -------
+    None
+    """
+    st.subheader("📝 Chord Sequence Editor")
+    st.markdown("Create and save chord progressions for practice or reference.")
+
+    # Get or initialize chord sequence
+    if SESSION_KEY_CHORD_SEQ not in st.session_state:
+        st.session_state[SESSION_KEY_CHORD_SEQ] = []
+
+    sequence = st.session_state[SESSION_KEY_CHORD_SEQ]
+
+    # Controls
+    col1, col2, col3 = st.columns([3, 1, 1])
+
+    with col1:
+        # Chord input
+        all_possible_chords = [
+            f"{note}:{chord_type}"
+            for note in ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+            for chord_type in ["maj", "min", "7", "maj7", "min7", "sus2", "sus4", "dim", "aug"]
+        ]
+        new_chord = st.selectbox(
+            "Add Chord",
+            ["""""" + chord for chord in all_possible_chords],
+            index=0,
+            help="Select a chord to add to the sequence",
+        )
+
+    with col2:
+        if st.button("➕ Add", use_container_width=True):
+            if new_chord:
+                sequence.append(new_chord)
+                st.session_state[SESSION_KEY_CHORD_SEQ] = sequence
+
+    with col3:
+        if st.button("🗑️ Clear", use_container_width=True):
+            st.session_state[SESSION_KEY_CHORD_SEQ] = []
+
+    # Display sequence
+    if sequence:
+        st.markdown("**Current Sequence:**")
+        cols = st.columns(min(len(sequence), 6))
+        for idx, chord in enumerate(sequence):
+            with cols[idx % 6]:
+                if st.button(f"{chord} ❌", key=f"chord_{idx}", use_container_width=True):
+                    # Remove this chord
+                    sequence.pop(idx)
+                    st.session_state[SESSION_KEY_CHORD_SEQ] = sequence
+                    st.rerun()
+    else:
+        st.info("No chords in sequence yet. Add some using the controls above!")
+
+
 def main() -> None:
     """
     Streamlit UI entrypoint.
@@ -727,11 +1165,15 @@ def main() -> None:
     _init_session_state()
     selected_model = _render_sidebar()
 
-    tab_split, tab_chords = st.tabs(["Stem separation", "Chord detection"])
+    tab_split, tab_chords, tab_live = st.tabs(
+        ["Stem separation", "Chord detection", "Live Harmony"]
+    )
     with tab_split:
         _render_split_tab(model=selected_model)
     with tab_chords:
         _render_chords_tab()
+    with tab_live:
+        _render_live_harmony_tab()
 
 
 if __name__ == "__main__":

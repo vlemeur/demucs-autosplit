@@ -275,3 +275,120 @@ def all_chord_types() -> list[str]:
         List of chord type suffixes (e.g., ['maj', 'min', '7']).
     """
     return CHORD_TYPES.copy()
+
+
+def _get_note_set(chord_label: str) -> set[str]:
+    """
+    Get the set of base notes (without octave) for a chord label.
+
+    Parameters
+    ----------
+    chord_label : str
+        Chord label in format "NOTE:CHORD_TYPE" (e.g., "C:maj", "G:min7").
+
+    Returns
+    -------
+    set[str]
+        Set of base note names (e.g., {"C", "E", "G"} for "C:maj").
+    """
+    notes = get_chord_notes(chord_label)
+    return {note[:-1] for note in notes if note}  # Remove octave number
+
+
+def detect_chord_from_notes(notes: list[str], min_match_ratio: float = 0.7) -> str | None:
+    """
+    Detect the most likely chord from a list of played notes.
+
+    This function finds the chord that best matches the input notes.
+    A chord matches if all its notes are present in the input (ignoring octaves).
+    The chord with the most matching notes wins.
+
+    Parameters
+    ----------
+    notes : list[str]
+        List of note names with octaves (e.g., ["C4", "E4", "G4"]).
+    min_match_ratio : float, default=0.7
+        Minimum ratio of chord notes that must be present in input to consider a match.
+        For example, 0.7 means at least 70% of the chord's notes must be in the input.
+
+    Returns
+    -------
+    str or None
+        The detected chord label (e.g., "C:maj"), or None if no match found.
+
+    Examples
+    --------
+    >>> detect_chord_from_notes(["C4", "E4", "G4"])
+    'C:maj'
+    >>> detect_chord_from_notes(["C4", "E4", "G4", "B4"])
+    'C:maj7'
+    >>> detect_chord_from_notes(["C4", "Eb4", "G4"])
+    'C:min'
+    """
+    if not notes:
+        return None
+
+    # Extract base notes (without octave)
+    input_notes = {note[:-1] if len(note) > 1 and note[-1].isdigit() else note for note in notes}
+
+    best_chord = None
+    best_score = 0
+
+    for chord_label in CHORD_MAP:
+        chord_notes = _get_note_set(chord_label)
+        if not chord_notes:
+            continue
+
+        # Calculate how many chord notes are in the input
+        match_count = len(chord_notes & input_notes)
+        match_ratio = match_count / len(chord_notes)
+
+        # Only consider chords where at least min_match_ratio of notes match
+        if match_ratio >= min_match_ratio:
+            # Score: prefer chords with more matching notes
+            # Also prefer simpler chords (fewer notes) when tie-breaking
+            score = match_count * 100 - len(chord_notes)
+            if score > best_score or (score == best_score and best_chord is None):
+                best_score = score
+                best_chord = chord_label
+
+    return best_chord
+
+
+def detect_chords_from_notes(notes: list[str], min_match_ratio: float = 0.7) -> list[str]:
+    """
+    Detect all possible chords from a list of played notes, sorted by likelihood.
+
+    Parameters
+    ----------
+    notes : list[str]
+        List of note names with octaves (e.g., ["C4", "E4", "G4"]).
+    min_match_ratio : float, default=0.7
+        Minimum ratio of chord notes that must be present in input.
+
+    Returns
+    -------
+    list[str]
+        List of matching chord labels, sorted by match quality (best first).
+    """
+    if not notes:
+        return []
+
+    input_notes = {note[:-1] if len(note) > 1 and note[-1].isdigit() else note for note in notes}
+    results = []
+
+    for chord_label in CHORD_MAP:
+        chord_notes = _get_note_set(chord_label)
+        if not chord_notes:
+            continue
+
+        match_count = len(chord_notes & input_notes)
+        match_ratio = match_count / len(chord_notes)
+
+        if match_ratio >= min_match_ratio:
+            score = match_count * 100 - len(chord_notes)
+            results.append((score, chord_label))
+
+    # Sort by score (descending)
+    results.sort(key=lambda x: (-x[0], x[1]))
+    return [chord for _, chord in results]
