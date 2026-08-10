@@ -30,7 +30,6 @@ WORK_DIR: Path = Path(".streamlit_workdir")
 UPLOAD_DIR: Path = WORK_DIR / "uploads"
 OUTPUT_DIR: Path = WORK_DIR / "outputs"
 
-TRY_FILTERS_OTHERS_DEFAULT: bool = False
 SUPPORTED_EXT: set[str] = {".wav", ".mp3"}
 
 # Model-specific stems for Demucs v4
@@ -84,14 +83,14 @@ def _init_session_state() -> None:
         st.session_state[SESSION_KEY_ZOOM_END_S] = 0.0
 
 
-def _render_sidebar() -> tuple[bool, str]:
+def _render_sidebar() -> str:
     """
     Render the sidebar controls.
 
     Returns
     -------
-    tuple[bool, str]
-        Whether the "Try filter others" toggle is enabled, and the selected model.
+    str
+        The selected model.
     """
     with st.sidebar:
         st.header("Settings")
@@ -115,9 +114,6 @@ def _render_sidebar() -> tuple[bool, str]:
 
         st.markdown("---")
 
-        try_filters = st.toggle("Try filter others", value=TRY_FILTERS_OTHERS_DEFAULT)
-        st.markdown("---")
-
         if st.button("🧹 Clear workspace"):
             clear_workspace(WORK_DIR)
             st.session_state[SESSION_KEY_STEMS_DIR] = None
@@ -125,7 +121,7 @@ def _render_sidebar() -> tuple[bool, str]:
             st.session_state[SESSION_KEY_CLIP_LABEL] = None
             st.success("Workspace cleared.")
 
-    return try_filters, selected_model
+    return selected_model
 
 
 def _simplify_chord_label(label: str) -> str:
@@ -273,14 +269,12 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
     return fig
 
 
-def _render_split_tab(try_filters: bool, model: str) -> None:
+def _render_split_tab(model: str) -> None:
     """
     Render the stem separation tab.
 
     Parameters
     ----------
-    try_filters : bool
-        Whether to enable "Try filter others" in the Demucs pipeline.
     model : str
         The Demucs model to use for separation.
 
@@ -321,7 +315,6 @@ def _render_split_tab(try_filters: bool, model: str) -> None:
                 stems_dir = run_split(
                     audio_path=audio_path,
                     output_dir=OUTPUT_DIR,
-                    try_filter_others=try_filters,
                     model=model,
                 )
             except (subprocess.CalledProcessError, FileNotFoundError, OSError, ValueError) as exc:
@@ -732,11 +725,11 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     _init_session_state()
-    try_filters, selected_model = _render_sidebar()
+    selected_model = _render_sidebar()
 
     tab_split, tab_chords = st.tabs(["Stem separation", "Chord detection"])
     with tab_split:
-        _render_split_tab(try_filters=try_filters, model=selected_model)
+        _render_split_tab(model=selected_model)
     with tab_chords:
         _render_chords_tab()
 

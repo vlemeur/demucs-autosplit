@@ -273,7 +273,6 @@ def validate_extension(file_path: Path, supported_ext: set[str]) -> bool:
 def run_split(
     audio_path: Path,
     output_dir: Path,
-    try_filter_others: bool = False,
     model: str = "htdemucs",
     segment: int = 7,
     device: str = "auto",
@@ -292,8 +291,6 @@ def run_split(
         Input audio file.
     output_dir : Path
         Output root directory.
-    try_filter_others : bool, optional
-        Enable optional filtering behavior. Default is False.
     model : str, optional
         Demucs model to use. Default is "htdemucs".
     segment : int, optional
@@ -322,7 +319,6 @@ def run_split(
     return run_demucs(
         file_path=audio_path,
         output_dir=output_dir,
-        try_filter_others=try_filter_others,
         model=model,
         segment=segment,
         device=device,
