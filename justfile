@@ -1,27 +1,21 @@
-# Justfile
+# justfile
 # Modern alternative to Makefile for demucs-autosplit
 
+set default-list := true
+
 # Variables for venv and tools
-venv_python := ".venv/bin/python"
-ruff := "{{venv_python}} -m ruff"
-pre_commit := "{{venv_python}} -m pre_commit"
+PYTHON := ".venv/bin/python"
 
 # Check code style and formatting (without applying fixes)
 lint:
-    #!/usr/bin/env bash
-    set -euxo pipefail
-    {{ruff}} check .
-    {{ruff}} format --check .
+    {{PYTHON}} -m ruff check .
+    {{PYTHON}} -m ruff format --check .
 
 # Apply code style and formatting fixes
 format:
-    #!/usr/bin/env bash
-    set -euxo pipefail
-    {{ruff}} check . --fix
-    {{ruff}} format .
+    {{PYTHON}} -m ruff check . --fix
+    {{PYTHON}} -m ruff format .
 
 # Run pre-commit hooks on all files
 check:
-    #!/usr/bin/env bash
-    set -euxo pipefail
-    {{pre_commit}} run --all-files
+    {{PYTHON}} -m pre_commit run --all-files
