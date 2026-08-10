@@ -227,14 +227,14 @@ def safe_filename(name: str) -> str:
     return "".join(c for c in name if c.isalnum() or c in ("-", "_", ".", " ")).strip()
 
 
-def save_bytes_to_file(data: bytes, dest_path: Path) -> Path:
+def save_bytes_to_file(data: bytes | memoryview, dest_path: Path) -> Path:
     """
     Save raw bytes to disk.
 
     Parameters
     ----------
-    data : bytes
-        File content.
+    data : bytes or memoryview
+        File content (bytes or memoryview from Streamlit UploadedFile).
     dest_path : Path
         Destination path.
 
@@ -244,6 +244,9 @@ def save_bytes_to_file(data: bytes, dest_path: Path) -> Path:
         Path to the saved file.
     """
     dest_path.parent.mkdir(parents=True, exist_ok=True)
+    # Handle memoryview from Streamlit
+    if isinstance(data, memoryview):
+        data = data.tobytes()
     dest_path.write_bytes(data)
     return dest_path
 
@@ -267,7 +270,19 @@ def validate_extension(file_path: Path, supported_ext: set[str]) -> bool:
     return file_path.suffix.lower() in supported_ext
 
 
-def run_split(audio_path: Path, output_dir: Path, try_filter_others: bool) -> None:
+def run_split(
+    audio_path: Path,
+    output_dir: Path,
+    try_filter_others: bool = False,
+    model: str = "htdemucs",
+    segment: int = 10,
+    device: str = "auto",
+    two_stems: str | None = None,
+    overlap: float = 0.25,
+    shifts: int = 1,
+    mp3: bool = False,
+    mp3_bitrate: int = 320,
+) -> Path | None:
     """
     Run Demucs on a single audio file.
 
@@ -277,19 +292,44 @@ def run_split(audio_path: Path, output_dir: Path, try_filter_others: bool) -> No
         Input audio file.
     output_dir : Path
         Output root directory.
-    try_filter_others : bool
-        Enable optional filtering behavior.
+    try_filter_others : bool, optional
+        Enable optional filtering behavior. Default is False.
+    model : str, optional
+        Demucs model to use. Default is "htdemucs".
+    segment : int, optional
+        Segment length in seconds for GPU processing. Default is 10.
+    device : str, optional
+        Device to use: "cpu", "cuda", or "auto". Default is "auto".
+    two_stems : str or None, optional
+        If provided, only separate this source from the rest (karaoke mode).
+    overlap : float, optional
+        Overlap between segments (0.0 to 1.0). Default is 0.25.
+    shifts : int, optional
+        Number of random shifts for prediction averaging. Default is 1.
+    mp3 : bool, optional
+        If True, save output as MP3 instead of WAV. Default is False.
+    mp3_bitrate : int, optional
+        MP3 bitrate in kbps. Default is 320.
 
     Returns
     -------
-    None
-        Demucs writes outputs to disk.
+    Path or None
+        Path to the directory containing the separated stems, or None if failed.
     """
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    run_demucs(
+    return run_demucs(
         file_path=audio_path,
         output_dir=output_dir,
         try_filter_others=try_filter_others,
+        model=model,
+        segment=segment,
+        device=device,
+        two_stems=two_stems,
+        overlap=overlap,
+        shifts=shifts,
+        mp3=mp3,
+        mp3_bitrate=mp3_bitrate,
     )
 
 
