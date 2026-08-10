@@ -51,13 +51,19 @@ uv run pre-commit install
 
 ### 4. Quality checks
 
+This project uses [Just](https://github.com/casey/just) as a modern alternative to Make.
 Run the common quality commands with:
 
 ```bash
-make format
-make lint
-make check
+just format
+just lint
+just check
 ```
+
+To install Just:
+- **macOS**: `brew install just`
+- **Linux**: `cargo install just` (requires Rust)
+- **Other**: See [Just installation guide](https://github.com/casey/just#installation).
 
 ---
 
