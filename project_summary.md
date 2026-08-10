@@ -19,7 +19,7 @@ Here's the step-by-step pipeline that runs automatically:
 
 ### 1. 🎵 User Input
 
-- The user drops a `.mp3` or `.wav` file into the `audio/` folder.
+- The user uploads a `.mp3` or `.wav` file through the Streamlit interface.
 
 ### 2. 🎚️ Stem Separation with Demucs
 

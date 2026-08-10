@@ -2,6 +2,8 @@
 
 > A comprehensive music production toolkit powered by [Demucs](https://github.com/facebookresearch/demucs), written in Python with a Streamlit interface.
 
+Repository name: `music-workbench`
+
 Music Workbench provides tools for musicians, producers, and learners:
 - **Stem Separation**: Split audio tracks into isolated stems (vocals, drums, bass, other)
 - **Chord Detection**: Analyze audio stems to detect chord progressions
@@ -36,8 +38,8 @@ Music Workbench provides tools for musicians, producers, and learners:
 ### 1. Clone the repository
 
 ```bash
-git clone git@github.com:vlemeur/demucs-autosplit.git
-cd demucs-autosplit
+git clone git@github.com:vlemeur/music-workbench.git
+cd music-workbench
 ```
 
 ### 2. Set up the environment
@@ -97,7 +99,7 @@ Then open your browser at:
 http://localhost:8501
 ```
 
-From the interface, you can:
+Music Workbench exposes three main workflows:
 
 ### 🎚️ Stem Separation Tab
 * Upload an audio file (`.wav` or `.mp3`)
@@ -133,12 +135,21 @@ To use the Live Harmony feature with your MIDI keyboard:
 5. **Launch the app** and go to the "Live Harmony" tab
 6. **Select your device** from the dropdown and click "Start"
 
+For quick MIDI input debugging outside the UI:
+
+```bash
+python scripts/midi_monitor.py
+```
+
+If several MIDI inputs are available, the script selects the first one by default and prints the exact commands to open a different port.
+
 ## 🧠 Notes
 
 * The application runs Demucs from the active Python environment.
 * Output files are stored in a local workspace directory (`.streamlit_workdir/`).
 * NumPy is pinned to `<2` for compatibility with PyTorch / torchaudio.
 * For portability, the project pins `torchaudio` below `2.9` on non-Intel platforms.
+* The product/repository name is `Music Workbench`; the internal package name `demucs_audiosplit` is still used in the codebase for compatibility.
 
 ---
 
