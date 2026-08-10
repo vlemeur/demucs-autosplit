@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import sys
 import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+
+
+SCRIPT_PATH = Path("scripts") / "midi_monitor.py"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -27,6 +36,52 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _get_mido_functions(
+    mido_module: Any,
+) -> tuple[Callable[[], Iterable[str]], Callable[[str], Any]]:
+    get_input_names = getattr(mido_module, "get_input_names", None)
+    open_input = getattr(mido_module, "open_input", None)
+
+    if not callable(get_input_names):
+        raise RuntimeError("The installed `mido` package does not expose `get_input_names()`.")
+    if not callable(open_input):
+        raise RuntimeError("The installed `mido` package does not expose `open_input()`.")
+
+    return cast("Callable[[], Iterable[str]]", get_input_names), cast(
+        "Callable[[str], Any]", open_input
+    )
+
+
+def _override_command(port_name: str) -> str:
+    quoted_port = shlex.quote(port_name)
+    return f"python {SCRIPT_PATH.as_posix()} --port {quoted_port}"
+
+
+def _select_port(ports: list[str], requested_port: str | None) -> str | None:
+    if not ports:
+        return None
+    if requested_port is not None:
+        return requested_port
+    return ports[0]
+
+
+def _print_port_selection(selected_port: str, ports: list[str], requested_port: str | None) -> None:
+    if requested_port is not None:
+        print(f"Selected MIDI input: {selected_port} (requested with --port)")
+        return
+
+    if len(ports) == 1:
+        print(f"Selected MIDI input: {selected_port} (only available input)")
+        return
+
+    print(f"Selected MIDI input: {selected_port} (default from {len(ports)} available inputs)")
+    print("Use one of these commands to monitor a different input:")
+    for port_name in ports:
+        if port_name == selected_port:
+            continue
+        print(f"- {_override_command(port_name)}")
+
+
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
@@ -38,36 +93,40 @@ def main() -> int:
         return 1
 
     try:
-        ports = list(mido.get_input_names())
+        get_input_names, open_input = _get_mido_functions(mido)
+        ports = list(get_input_names())
     except Exception as exc:
         print(f"Unable to query MIDI inputs: {exc}", file=sys.stderr)
         return 1
 
-    if args.list or not args.port:
+    if args.list:
         if not ports:
             print("No MIDI input ports found.")
             return 0
         print("Available MIDI input ports:")
         for index, port_name in enumerate(ports, start=1):
             print(f"{index}. {port_name}")
-        if args.list:
-            return 0
-        print('\nRe-run with --port "Exact Port Name" to monitor one input.')
         return 0
 
-    if args.port not in ports:
+    if args.port is not None and args.port not in ports:
         print(f"Unknown MIDI input port: {args.port}", file=sys.stderr)
         print("Known ports:", file=sys.stderr)
         for port_name in ports:
             print(f"- {port_name}", file=sys.stderr)
         return 1
 
-    print(f"Opening MIDI input: {args.port}")
+    selected_port = _select_port(ports, args.port)
+    if selected_port is None:
+        print("No MIDI input ports found.")
+        return 0
+
+    _print_port_selection(selected_port, ports, args.port)
+    print(f"Opening MIDI input: {selected_port}")
     print("Press Ctrl+C to stop.")
 
     message_count = 0
     try:
-        with mido.open_input(args.port) as input_port:
+        with open_input(selected_port) as input_port:
             while True:
                 seen_message = False
                 for message in input_port.iter_pending():
