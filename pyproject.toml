@@ -3,16 +3,16 @@ name = "demucs-autosplit"
 version = "0.1.0"
 description = "Batch stem separation using Demucs"
 authors = [{ name = "Vincent LE MEUR", email = "vincent.le-meur@metroscope.tech" }]
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.13,<3.15"
 
 dependencies = [
-    # Intel macOS (x86_64): pin to a version that still has wheels for this platform
-    "torch==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "torchaudio==2.2.2; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    # Other platforms (Linux, Windows, macOS arm64): allow newer versions
-    # Pin below 2.9 to avoid the new TorchCodec/FFmpeg runtime requirement.
-    "torch==2.8.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "torchaudio==2.8.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    # PyTorch 2.10+ supports Python 3.14
+    # Intel macOS (x86_64): use last version with wheels for this platform
+    "torch>=2.10.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torchaudio>=2.10.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    # Other platforms (Linux, Windows, macOS arm64)
+    "torch>=2.10.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchaudio>=2.10.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "demucs>=4.0.0",
     "scipy>=1.11.0",
     "numpy>=1.24.0,<2",
@@ -42,10 +42,17 @@ package-dir = { "" = "src" }
 # ---------------------
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py313"
 src = ["src", "scripts"]
 exclude = ["outputs", ".venv"]
 fix = true
+
+# ---------------------
+# Ty
+# ---------------------
+# Ty configuration is done via command line or discovered automatically.
+# Run: ty check src/ scripts/
+# See: https://github.com/astral-sh/ty for configuration options.
 
 [tool.ruff.lint]
 select = [

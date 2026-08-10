@@ -7,10 +7,10 @@ from pathlib import Path
 import plotly.graph_objects as go
 import streamlit as st
 
+from demucs_audiosplit.audiosplit import DEFAULT_MODEL, DEMUCS_MODELS
 from service import (
     clear_workspace,
     extract_wav_clip_bytes,
-    find_stems_dir,
     list_stems_wav,
     load_waveform_for_plot,
     predict_chords_for_stem,
@@ -32,7 +32,13 @@ OUTPUT_DIR: Path = WORK_DIR / "outputs"
 
 TRY_FILTERS_OTHERS_DEFAULT: bool = False
 SUPPORTED_EXT: set[str] = {".wav", ".mp3"}
-STEMS: list[str] = ["drums", "bass", "other", "vocals"]
+
+# Model-specific stems for Demucs v4
+MODEL_STEMS: dict[str, list[str]] = {
+    "htdemucs": ["drums", "bass", "other", "vocals"],
+    "htdemucs_ft": ["drums", "bass", "other", "vocals"],
+    "htdemucs_6s": ["drums", "bass", "other", "vocals", "guitar", "piano"],
+}
 
 SESSION_KEY_STEMS_DIR: str = "stems_dir"
 SESSION_KEY_CLIP_BYTES: str = "clip_bytes"
@@ -78,26 +84,48 @@ def _init_session_state() -> None:
         st.session_state[SESSION_KEY_ZOOM_END_S] = 0.0
 
 
-def _render_sidebar() -> bool:
+def _render_sidebar() -> tuple[bool, str]:
     """
     Render the sidebar controls.
 
     Returns
     -------
-    bool
-        Whether the "Try filter others" toggle is enabled.
+    tuple[bool, str]
+        Whether the "Try filter others" toggle is enabled, and the selected model.
     """
     with st.sidebar:
         st.header("Settings")
+
+        # Model selection
+        st.subheader("Demucs Model")
+        model_tooltip = {
+            "htdemucs": "Default Hybrid Transformer model - 9.0 dB SDR, best balance",
+            "htdemucs_ft": "Fine-tuned Hybrid Transformer - 9.2 dB SDR, 4x slower",
+            "htdemucs_6s": "6-source model: drums, bass, vocals, other, guitar, piano",
+        }
+
+        selected_model = st.selectbox(
+            "Model",
+            options=DEMUCS_MODELS,
+            index=DEMUCS_MODELS.index(DEFAULT_MODEL),
+            help="\n".join(
+                f"**{m}**: {model_tooltip.get(m, 'No description')}" for m in DEMUCS_MODELS
+            ),
+        )
+
+        st.markdown("---")
+
         try_filters = st.toggle("Try filter others", value=TRY_FILTERS_OTHERS_DEFAULT)
         st.markdown("---")
+
         if st.button("🧹 Clear workspace"):
             clear_workspace(WORK_DIR)
             st.session_state[SESSION_KEY_STEMS_DIR] = None
             st.session_state[SESSION_KEY_CLIP_BYTES] = None
             st.session_state[SESSION_KEY_CLIP_LABEL] = None
             st.success("Workspace cleared.")
-    return try_filters
+
+    return try_filters, selected_model
 
 
 def _simplify_chord_label(label: str) -> str:
@@ -245,7 +273,7 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
     return fig
 
 
-def _render_split_tab(try_filters: bool) -> None:
+def _render_split_tab(try_filters: bool, model: str) -> None:
     """
     Render the stem separation tab.
 
@@ -253,12 +281,16 @@ def _render_split_tab(try_filters: bool) -> None:
     ----------
     try_filters : bool
         Whether to enable "Try filter others" in the Demucs pipeline.
+    model : str
+        The Demucs model to use for separation.
 
     Returns
     -------
     None
     """
-    st.caption("Upload a track and get 4 stems: drums, bass, other, vocals.")
+    stems = MODEL_STEMS.get(model, ["drums", "bass", "other", "vocals"])
+    num_stems = len(stems)
+    st.caption(f"Upload a track and get {num_stems} stems: {', '.join(stems)}.")
 
     uploaded = st.file_uploader(
         "Upload audio",
@@ -278,30 +310,29 @@ def _render_split_tab(try_filters: bool) -> None:
 
     track_name = audio_path.stem
     st.write("**File:**", audio_path.name)
+    st.write("**Model:**", model)
 
     if st.button("🚀 Split track", type="primary"):
         with st.status("Running Demucs…", expanded=True) as status:
-            st.write("Splitting… this can take a while depending on your CPU/GPU.")
+            st.write(
+                f"Splitting with model {model}… this can take a while depending on your CPU/GPU."
+            )
             try:
-                run_split(
+                stems_dir = run_split(
                     audio_path=audio_path,
                     output_dir=OUTPUT_DIR,
                     try_filter_others=try_filters,
+                    model=model,
                 )
-            except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+            except (subprocess.CalledProcessError, FileNotFoundError, OSError, ValueError) as exc:
                 status.update(label="Failed", state="error", expanded=True)
                 st.exception(exc)
                 return
 
-            stems_dir = find_stems_dir(
-                output_root=OUTPUT_DIR,
-                track_name=track_name,
-                stems=STEMS,
-            )
             if stems_dir is None:
-                status.update(label="Stems not found", state="error", expanded=True)
+                status.update(label="Failed", state="error", expanded=True)
                 st.error(
-                    "Demucs finished, but the 4 stems were not found. "
+                    f"Demucs finished, but stems were not found for model {model}. "
                     "Inspect .streamlit_workdir/outputs to verify the output layout."
                 )
                 return
@@ -313,21 +344,25 @@ def _render_split_tab(try_filters: bool) -> None:
 
         # Store stems_dir for the Chord detection tab.
         st.session_state[SESSION_KEY_STEMS_DIR] = str(stems_dir)
+        # Store the model for chord detection
+        st.session_state["selected_model"] = model
 
-        stems_bytes = read_stems(stems_dir=stems_dir, stems=STEMS)
-        zip_bytes = zip_stems(stems_dir=stems_dir, stems=STEMS)
+        stems_bytes = read_stems(stems_dir=stems_dir, stems=stems)
+        zip_bytes = zip_stems(stems_dir=stems_dir, stems=stems)
 
         st.subheader("Download")
         st.download_button(
             "⬇️ Download all (ZIP)",
             data=zip_bytes,
-            file_name=f"{track_name}_stems.zip",
+            file_name=f"{track_name}_stems_{model}.zip",
             mime="application/zip",
         )
 
-        cols = st.columns(4)
-        for idx, stem in enumerate(STEMS):
-            with cols[idx]:
+        # Create columns based on number of stems
+        num_cols = min(4, num_stems)
+        cols = st.columns(num_cols)
+        for idx, stem in enumerate(stems):
+            with cols[idx % num_cols]:
                 st.download_button(
                     f"⬇️ {stem}.wav",
                     data=stems_bytes[stem],
@@ -336,7 +371,7 @@ def _render_split_tab(try_filters: bool) -> None:
                 )
 
         st.subheader("Preview")
-        for stem in STEMS:
+        for stem in stems:
             st.markdown(f"**{stem}**")
             st.audio(stems_bytes[stem], format="audio/wav")
 
@@ -350,12 +385,17 @@ def _get_stems_dir() -> Path | None:
     Path or None
         Stems directory if available and existing, otherwise None.
     """
+    from urllib.parse import unquote
+
     stems_dir_str = st.session_state.get(SESSION_KEY_STEMS_DIR)
     if stems_dir_str is None:
         st.info("Run a stem separation first, then come back here to detect chords.")
         return None
 
+    # Streamlit may encode spaces as %20 in session state, decode them
+    stems_dir_str = unquote(stems_dir_str)
     stems_dir = Path(stems_dir_str)
+
     if not stems_dir.exists():
         st.warning("Stored stems folder does not exist anymore. Please run a split again.")
         st.session_state[SESSION_KEY_STEMS_DIR] = None
@@ -364,7 +404,7 @@ def _get_stems_dir() -> Path | None:
     return stems_dir
 
 
-def _get_stems_paths(stems_dir: Path) -> dict[str, Path] | None:
+def _get_stems_paths(stems_dir: Path, model: str) -> dict[str, Path] | None:
     """
     Collect existing stem wav paths for chord prediction.
 
@@ -372,13 +412,16 @@ def _get_stems_paths(stems_dir: Path) -> dict[str, Path] | None:
     ----------
     stems_dir : Path
         Directory containing stem wav files.
+    model : str
+        The Demucs model used for separation.
 
     Returns
     -------
     dict of str to Path or None
         Mapping {stem_name: wav_path}, or None if no stems are found.
     """
-    stems_paths: dict[str, Path] = list_stems_wav(stems_dir=stems_dir, stems=STEMS)
+    stems = MODEL_STEMS.get(model, ["drums", "bass", "other", "vocals"])
+    stems_paths: dict[str, Path] = list_stems_wav(stems_dir=stems_dir, stems=stems)
     if not stems_paths:
         st.warning("No stems were found in the stored stems folder.")
         return None
@@ -499,9 +542,21 @@ def _render_chords_plot(output_lab: Path, input_wav: Path) -> float | None:
     try:
         segments = read_chords_lab(output_lab)
         times_s, mono, duration_s = load_waveform_for_plot(input_wav)
-    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
-        st.error(str(exc))
+    except FileNotFoundError as exc:
+        st.error(f"File not found: {exc}")
         return None
+    except (OSError, RuntimeError, ValueError) as exc:
+        st.error(f"Error loading data: {exc}")
+        return None
+
+    # Check if any chords were detected
+    if not segments:
+        st.warning(
+            "No chords were detected in this stem. "
+            "This can happen if the stem is silent or contains only drums/bass. "
+            "Try selecting a different stem (e.g., 'other' for harmonic instruments)."
+        )
+        return float(duration_s)
 
     config = _get_plot_config(duration_s=float(duration_s))
     fig = _build_chords_waveform_figure(
@@ -640,7 +695,9 @@ def _render_chords_tab() -> None:
     if stems_dir is None:
         return
 
-    stems_paths = _get_stems_paths(stems_dir=stems_dir)
+    # Get the model from session state
+    model = st.session_state.get("selected_model", DEFAULT_MODEL)
+    stems_paths = _get_stems_paths(stems_dir=stems_dir, model=model)
     if stems_paths is None:
         return
 
@@ -675,11 +732,11 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     _init_session_state()
-    try_filters = _render_sidebar()
+    try_filters, selected_model = _render_sidebar()
 
     tab_split, tab_chords = st.tabs(["Stem separation", "Chord detection"])
     with tab_split:
-        _render_split_tab(try_filters=try_filters)
+        _render_split_tab(try_filters=try_filters, model=selected_model)
     with tab_chords:
         _render_chords_tab()
 

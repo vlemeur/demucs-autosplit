@@ -7,53 +7,98 @@ from madmom.audio.chroma import DeepChromaProcessor
 from madmom.audio.signal import SignalProcessor
 from madmom.features.chords import DeepChromaChordRecognitionProcessor
 
-logger = logging.getLogger(__name__)
+from demucs_audiosplit.chords_library import get_chord_notes
 
-# Mapping simplifié : à compléter si besoin
-CHORD_MAPPING = {
-    "C:maj": ["C4", "E4", "G4"],
-    "C:min": ["C4", "Eb4", "G4"],
-    "C#:maj": ["C#4", "F4", "G#4"],
-    "C#:min": ["C#4", "E4", "G#4"],
-    "D:maj": ["D4", "F#4", "A4"],
-    "D:min": ["D4", "F4", "A4"],
-    "D#:maj": ["D#4", "G4", "A#4"],
-    "D#:min": ["D#4", "F#4", "A#4"],
-    "E:maj": ["E4", "G#4", "B4"],
-    "E:min": ["E4", "G4", "B4"],
-    "F:maj": ["F4", "A4", "C5"],
-    "F:min": ["F4", "Ab4", "C5"],
-    "F#:maj": ["F#4", "A#4", "C#5"],
-    "F#:min": ["F#4", "A4", "C#5"],
-    "G:maj": ["G4", "B4", "D5"],
-    "G:min": ["G4", "A#4", "D5"],
-    "G#:maj": ["G#4", "C5", "D#5"],
-    "G#:min": ["G#4", "B4", "D#5"],
-    "A:maj": ["A4", "C#5", "E5"],
-    "A:min": ["A4", "C5", "E5"],
-    "A#:maj": ["A#4", "D5", "F5"],
-    "A#:min": ["A#4", "C#5", "F5"],
-    "B:maj": ["B4", "D#5", "F#5"],
-    "B:min": ["B4", "D5", "F#5"],
-}
+logger = logging.getLogger(__name__)
 
 
 def _prepare_audio(input_path: Path, output_path: Path) -> None:
+    """
+    Prepare audio file for chord detection.
+
+    Converts stereo to mono and ensures float32 format at 44100 Hz.
+
+    Parameters
+    ----------
+    input_path : Path
+        Path to the input audio file.
+    output_path : Path
+        Path to save the prepared mono audio file.
+
+    Raises
+    ------
+    FileNotFoundError
+        If input_path does not exist.
+    RuntimeError
+        If audio cannot be read or written.
+    """
     data, sr = sf.read(str(input_path))
     if data.ndim > 1:
         logger.info(f"🔄 Converting stereo to mono for: {input_path.name}")
         data = np.mean(data, axis=1)
+
+    # Normalize to prevent clipping
+    max_val = np.max(np.abs(data))
+    if max_val > 0:
+        data = data / max_val * 0.99
+
     data = data.astype(np.float32)
-    sf.write(str(output_path), data, sr)
+
+    # Madmom expects 44100 Hz
+    if sr != 44100:
+        from scipy.signal import resample
+
+        data = resample(data, int(len(data) * 44100 / sr))
+        sr = 44100
+
+    sf.write(str(output_path), data, sr, format="WAV")
 
 
-def predict_chords_from_wave(input_wav: Path, output_lab: Path) -> None:
+def predict_chords_from_wave(
+    input_wav: Path,
+    output_lab: Path,
+    method: str = "madmom",
+) -> None:
+    """
+    Predict chords from a WAV file and save to a .lab file.
+
+    Parameters
+    ----------
+    input_wav : Path
+        Path to the input WAV file (mono or stereo).
+    output_lab : Path
+        Path to the output .lab file (will be created/overwritten).
+    method : str, default="madmom"
+        Chord detection method. Currently only "madmom" is implemented.
+        Future: "chordino" for external Chordino tool.
+
+    Raises
+    ------
+    FileNotFoundError
+        If input_wav does not exist.
+    ValueError
+        If method is not supported.
+    RuntimeError
+        If chord prediction fails.
+
+    Notes
+    -----
+    The output .lab file format is:
+    START_TIME\tEND_TIME\tCHORD_LABEL\tNOTES
+
+    Example:
+    0.000\t1.500\tC:maj\tC3,E3,G3
+    """
+    if method != "madmom":
+        raise ValueError(
+            f"Unsupported chord detection method: {method}. Use 'madmom' or install chordino."
+        )
+
     if not input_wav.exists():
-        logger.error(f"Input file not found: {input_wav}")
-        return
+        raise FileNotFoundError(f"Input file not found: {input_wav}")
 
     try:
-        logger.info(f"🎵 Running chord recognition on: {input_wav.name}")
+        logger.info(f"🎵 Running chord recognition on: {input_wav.name} (method={method})")
         tmp_path = input_wav.with_name(f"{input_wav.stem}_madmom_tmp.wav")
         _prepare_audio(input_wav, tmp_path)
 
@@ -65,9 +110,12 @@ def predict_chords_from_wave(input_wav: Path, output_lab: Path) -> None:
         chroma_features = chroma(audio)
         chords = decoder(chroma_features)
 
-        with output_lab.open("w") as f:
+        # Clean up temp file
+        tmp_path.unlink(missing_ok=True)
+
+        with output_lab.open("w", encoding="utf-8") as f:
             for start, end, label in chords:
-                notes = CHORD_MAPPING.get(label, [])
+                notes = get_chord_notes(label)
                 notes_str = ",".join(notes) if notes else "-"
                 f.write(f"{start:.3f}\t{end:.3f}\t{label}\t{notes_str}\n")
 
@@ -75,3 +123,4 @@ def predict_chords_from_wave(input_wav: Path, output_lab: Path) -> None:
 
     except Exception as e:
         logger.error(f"❌ Failed to predict chords for {input_wav.name}: {e}")
+        raise RuntimeError(f"Chord prediction failed: {e}") from e
