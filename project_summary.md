@@ -1,14 +1,15 @@
 
-# 🎛️ Project: `demucs-autosplit` – Automatic Audio Splitting and Chord Analysis
+# 🎛️ Project: `music-workbench` – Music Production Toolkit
 
 ## 🧠 Goal
 
-The main goal of this project is to:
+Music Workbench is a comprehensive toolkit for musicians, producers, and learners.
+The main goals are:
 
-1. **Automatically extract instrumental stems** (vocals, drums, bass, others) from a single audio track (MP3 or WAV).
-2. **Isolate the harmonic stem** (typically guitar, keyboard, synth).
-3. **Automatically detect the chord progression** throughout the track.
-4. **Translate each chord into actual piano notes**, from bass to treble, for interpretation or performance.
+1. **Stem Separation**: Automatically extract instrumental stems (vocals, drums, bass, others) from a single audio track (MP3 or WAV).
+2. **Chord Detection from Audio**: Isolate the harmonic stem (typically guitar, keyboard, synth) and automatically detect the chord progression.
+3. **Live MIDI Harmony**: Connect your MIDI keyboard and detect chords in real-time as you play.
+4. **Chord-to-Notes Mapping**: Translate each chord into actual piano notes, from bass to treble, for interpretation or performance.
 
 ---
 
@@ -71,5 +72,15 @@ Here's the step-by-step pipeline that runs automatically:
   - `DeepChromaChordRecognitionProcessor`: CRF-based sequence model to detect the most likely chord series.
 - **Trained on**: datasets with labeled chord progressions.
 - **Chords**: major/minor only.
+
+### 3. MIDI Processing – Real-time Chord Detection
+
+- **Libraries**: `mido`, `python-rtmidi`
+- **Functionality**:
+  - Real-time MIDI note input from connected devices
+  - Note-to-chord detection using pattern matching
+  - Support for all standard chord types (maj, min, 7ths, suspended, diminished, augmented)
+  - Custom chord library with comprehensive note mappings
+- **Use case**: Live harmony practice, chord sequence creation, real-time feedback
 
 ---
