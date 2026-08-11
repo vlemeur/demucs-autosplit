@@ -20,7 +20,7 @@ format:
 
 # Run type checking with ty
 type-check:
-    {{TY}} check .
+    VIRTUAL_ENV="$PWD/.venv" {{TY}} check .
 
 # Run prek hooks on all files
 check:
