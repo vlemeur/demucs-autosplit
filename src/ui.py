@@ -13,6 +13,13 @@ from demucs_audiosplit.audiosplit import DEFAULT_MODEL, DEMUCS_MODELS
 from midi import list_midi_devices
 from midi.chord_detector import ChordDetector
 from midi.handler import MIDI_NOTE_TO_NAME
+from midi.trainer import (
+    VISIBLE_MAJOR_KEYS,
+    VISIBLE_MINOR_KEYS,
+    build_visible_exercises,
+    compare_note_sets,
+    render_progression_svg,
+)
 from service import (
     clear_workspace,
     extract_wav_clip_bytes,
@@ -62,7 +69,14 @@ SESSION_KEY_LIVE_STOP_EVENT: str = "live_stop_event"
 SESSION_KEY_LIVE_SNAPSHOT: str = "live_snapshot"
 SESSION_KEY_LIVE_ERROR: str = "live_error"
 SESSION_KEY_CHORD_SEQ: str = "chord_sequence"
+SESSION_KEY_251_MODE: str = "trainer_251_mode"
+SESSION_KEY_251_KEY: str = "trainer_251_key"
+SESSION_KEY_251_VARIANT: str = "trainer_251_variant"
+SESSION_KEY_251_STEP: str = "trainer_251_step"
+SESSION_KEY_251_AUTO_ADVANCE: str = "trainer_251_auto_advance"
+SESSION_KEY_251_LAST_MATCHED_STEP: str = "trainer_251_last_matched_step"
 LIVE_REFRESH_INTERVAL_S: float = 0.2
+VISIBLE_251_EXERCISES = build_visible_exercises()
 
 
 @dataclass(frozen=True)
@@ -810,6 +824,18 @@ def _init_live_harmony_state() -> None:
         st.session_state[SESSION_KEY_LIVE_ERROR] = None
     if SESSION_KEY_CHORD_SEQ not in st.session_state:
         st.session_state[SESSION_KEY_CHORD_SEQ] = []
+    if SESSION_KEY_251_MODE not in st.session_state:
+        st.session_state[SESSION_KEY_251_MODE] = "major"
+    if SESSION_KEY_251_KEY not in st.session_state:
+        st.session_state[SESSION_KEY_251_KEY] = VISIBLE_MAJOR_KEYS[0]
+    if SESSION_KEY_251_VARIANT not in st.session_state:
+        st.session_state[SESSION_KEY_251_VARIANT] = "Type A"
+    if SESSION_KEY_251_STEP not in st.session_state:
+        st.session_state[SESSION_KEY_251_STEP] = 0
+    if SESSION_KEY_251_AUTO_ADVANCE not in st.session_state:
+        st.session_state[SESSION_KEY_251_AUTO_ADVANCE] = True
+    if SESSION_KEY_251_LAST_MATCHED_STEP not in st.session_state:
+        st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
 
 
 def _reset_live_harmony_session_values() -> None:
@@ -1040,6 +1066,8 @@ def _render_live_harmony_tab() -> None:
     current_alts = st.session_state.get(SESSION_KEY_LIVE_CHORD_ALTS, [])
     confidence = st.session_state.get(SESSION_KEY_LIVE_CONFIDENCE, 0.0)
 
+    _render_251_trainer(current_notes=current_notes)
+
     # Display in columns
     col1, col2 = st.columns([2, 1])
 
@@ -1086,6 +1114,132 @@ def _render_live_harmony_tab() -> None:
     if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
         time.sleep(LIVE_REFRESH_INTERVAL_S)
         st.rerun()
+
+
+def _render_251_trainer(current_notes: list[str]) -> None:
+    """Render guided ii-V-I practice with target voicings and staff notation."""
+    st.subheader("🎼 251 Trainer")
+    st.markdown(
+        """
+        Practice guided `ii-V-I` voicings with a target progression on staff.
+        The trainer validates the current step and can auto-advance when the voicing matches.
+        """
+    )
+
+    mode = st.radio(
+        "Mode",
+        options=["major", "minor"],
+        horizontal=True,
+        key=SESSION_KEY_251_MODE,
+    )
+    key_options = VISIBLE_MAJOR_KEYS if mode == "major" else VISIBLE_MINOR_KEYS
+    current_key = st.session_state.get(SESSION_KEY_251_KEY, key_options[0])
+    if current_key not in key_options:
+        st.session_state[SESSION_KEY_251_KEY] = key_options[0]
+        st.session_state[SESSION_KEY_251_STEP] = 0
+        current_key = key_options[0]
+
+    col1, col2, col3, col4 = st.columns([1.2, 1, 1, 1])
+    with col1:
+        selected_key = st.selectbox(
+            "Key",
+            options=key_options,
+            key=SESSION_KEY_251_KEY,
+        )
+    with col2:
+        st.selectbox(
+            "Voicing",
+            options=["Type A", "Type B"],
+            key=SESSION_KEY_251_VARIANT,
+        )
+    with col3:
+        st.toggle(
+            "Auto-advance",
+            key=SESSION_KEY_251_AUTO_ADVANCE,
+            help="Advance to the next chord when the current target voicing is matched exactly.",
+        )
+    with col4:
+        if st.button("↺ Restart", use_container_width=True):
+            st.session_state[SESSION_KEY_251_STEP] = 0
+            st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
+
+    exercise_id = (
+        f"{st.session_state[SESSION_KEY_251_MODE]}:"
+        f"{selected_key}:"
+        f"{st.session_state[SESSION_KEY_251_VARIANT]}"
+    )
+    exercise = VISIBLE_251_EXERCISES[exercise_id]
+
+    current_step = int(st.session_state.get(SESSION_KEY_251_STEP, 0))
+    current_step = max(0, min(current_step, len(exercise.steps) - 1))
+    step = exercise.steps[current_step]
+    match_result = compare_note_sets(step.expected_notes, current_notes)
+    _maybe_auto_advance_251(
+        match_result=match_result, step_index=current_step, num_steps=len(exercise.steps)
+    )
+
+    nav1, nav2, nav3 = st.columns([1, 1, 2])
+    with nav1:
+        if st.button("← Previous", use_container_width=True, disabled=current_step == 0):
+            st.session_state[SESSION_KEY_251_STEP] = current_step - 1
+            st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
+            st.rerun()
+    with nav2:
+        if st.button(
+            "Next →",
+            use_container_width=True,
+            disabled=current_step >= len(exercise.steps) - 1,
+        ):
+            st.session_state[SESSION_KEY_251_STEP] = current_step + 1
+            st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
+            st.rerun()
+    with nav3:
+        st.caption(f"Step {current_step + 1}/{len(exercise.steps)}: target `{step.symbol}`")
+
+    status_col1, status_col2, status_col3 = st.columns([1.2, 1.2, 2.2])
+    with status_col1:
+        if match_result.exact:
+            st.success("Exact voicing match")
+        elif match_result.pitch_class_only:
+            st.info("Right chord tones, different octave/spacing")
+        elif current_notes:
+            st.warning("Different voicing or chord")
+        else:
+            st.info("Play the target voicing to validate this step.")
+    with status_col2:
+        st.caption("Expected")
+        st.code(", ".join(step.expected_notes))
+    with status_col3:
+        st.caption("Played")
+        st.code(", ".join(current_notes) if current_notes else "No notes")
+
+    st.markdown(
+        render_progression_svg(exercise, active_step=current_step, played_notes=current_notes),
+        unsafe_allow_html=True,
+    )
+
+    if exercise.mode == "minor":
+        st.caption(
+            "Minor voicings use compact four-note shapes with the altered dominant color "
+            "(`7b9`) on staff for step-by-step practice."
+        )
+
+
+def _maybe_auto_advance_251(*, match_result, step_index: int, num_steps: int) -> None:
+    """Advance the trainer when auto-advance is enabled and the voicing is correct."""
+    if not st.session_state.get(SESSION_KEY_251_AUTO_ADVANCE, True):
+        return
+
+    last_matched_step = st.session_state.get(SESSION_KEY_251_LAST_MATCHED_STEP)
+    if match_result.exact and last_matched_step != step_index:
+        st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = step_index
+        if step_index < num_steps - 1:
+            st.session_state[SESSION_KEY_251_STEP] = step_index + 1
+            st.rerun()
+        return
+
+    if not match_result.exact:
+        st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
 
 
 def _render_chord_sequence_editor() -> None:
