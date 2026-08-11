@@ -172,7 +172,7 @@ MAJOR_EXERCISE_VOICINGS: dict[str, dict[str, list[tuple[str, tuple[str, ...]]]]]
             ("Dmaj7", ("D3", "F#4", "C#5")),
         ],
         "Type B": [
-            ("Em7", ("E3", "D3", "G3")),
+            ("Em7", ("E3", "D5", "G5")),
             ("A7", ("A3", "C#5", "G5")),
             ("Dmaj7", ("D3", "C#5", "F#5")),
         ],
