@@ -5,17 +5,11 @@ from functools import lru_cache
 from html import escape
 from pathlib import Path
 
-try:
-    import verovio
-    from music21 import chord, clef, key, layout, meter, musicxml, note, stream
+import verovio
+from music21 import chord, clef, key, layout, meter, musicxml, note, stream
 
-    NOTATION_BACKEND_AVAILABLE = True
-    NOTATION_BACKEND_ERROR = ""
-except ImportError as exc:  # pragma: no cover - depends on optional runtime deps
-    verovio = None
-    chord = clef = expressions = key = layout = meter = musicxml = note = stream = None
-    NOTATION_BACKEND_AVAILABLE = False
-    NOTATION_BACKEND_ERROR = str(exc)
+NOTATION_BACKEND_AVAILABLE = True
+NOTATION_BACKEND_ERROR = ""
 
 
 NOTE_NAME_TO_PITCH_CLASS: dict[str, int] = {
@@ -497,7 +491,9 @@ def render_progression_svg(
             f"{
                 _render_score_svg(
                     score_xml=_single_step_musicxml(played_step),
-                    container_class='trainer-score trainer-score--played')}"
+                    container_class='trainer-score trainer-score--played',
+                )
+            }"
             "</div>"
         )
 
