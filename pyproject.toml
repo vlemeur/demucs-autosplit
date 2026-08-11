@@ -32,6 +32,7 @@ dependencies = [
 dev = [
     "prek>=0.4.0,<0.5.0",
     "ruff>=0.4.10",
+    "ty>=0.0.1",
 ]
 
 [build-system]
