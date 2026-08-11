@@ -473,14 +473,19 @@ def render_progression_svg(
 
     played_svg = ""
     if played_notes:
+        prefer_flats = _exercise_prefers_flats(exercise)
+        respelled_played_notes = tuple(
+            midi_to_note_name(note_name_to_midi(note_name), prefer_flats=prefer_flats)
+            for note_name in played_notes
+        )
         played_upper, played_lower = _split_played_notes_for_staff(
-            played_notes=played_notes,
+            played_notes=list(respelled_played_notes),
             staff=exercise.steps[active_step].staff,
         )
         played_step = TrainerStep(
             symbol="Played",
-            expected_notes=tuple(played_notes),
-            display_notes=tuple(played_notes),
+            expected_notes=respelled_played_notes,
+            display_notes=respelled_played_notes,
             lower_notes=played_lower,
             upper_notes=played_upper,
             staff=exercise.steps[active_step].staff,
@@ -490,7 +495,10 @@ def render_progression_svg(
             '<div class="trainer-subtitle">Played shape</div>'
             f"{
                 _render_score_svg(
-                    score_xml=_single_step_musicxml(played_step),
+                    score_xml=_single_step_musicxml(
+                        played_step,
+                        key_signature_sharps=_exercise_key_signature_sharps(exercise),
+                    ),
                     container_class='trainer-score trainer-score--played',
                 )
             }"
@@ -542,9 +550,9 @@ def _exercise_musicxml(exercise: TrainerExercise) -> str:
     return musicxml.m21ToXml.GeneralObjectExporter(score).parse().decode("utf-8")
 
 
-@lru_cache(maxsize=128)
-def _single_step_musicxml(step: TrainerStep) -> str:
-    score = _build_single_step_score(step)
+@lru_cache(maxsize=256)
+def _single_step_musicxml(step: TrainerStep, key_signature_sharps: int = 0) -> str:
+    score = _build_single_step_score(step, key_signature_sharps=key_signature_sharps)
     return musicxml.m21ToXml.GeneralObjectExporter(score).parse().decode("utf-8")
 
 
@@ -594,15 +602,15 @@ def _build_minor_score(exercise: TrainerExercise):
     return score
 
 
-def _build_single_step_score(step: TrainerStep):
+def _build_single_step_score(step: TrainerStep, *, key_signature_sharps: int):
     score = stream.Score(id=f"single-{step.symbol}")
     if step.staff == "grand":
         upper_part = stream.Part(id="played-upper")
         lower_part = stream.Part(id="played-lower")
         upper_part.append(clef.TrebleClef())
         lower_part.append(clef.BassClef())
-        upper_part.append(key.KeySignature(0))
-        lower_part.append(key.KeySignature(0))
+        upper_part.append(key.KeySignature(key_signature_sharps))
+        lower_part.append(key.KeySignature(key_signature_sharps))
         upper_part.append(_build_measure(label=None, pitches=_played_upper(step)))
         lower_part.append(_build_measure(label=None, pitches=_played_lower(step)))
         score.insert(0, upper_part)
@@ -614,10 +622,25 @@ def _build_single_step_score(step: TrainerStep):
 
     part = stream.Part(id="played-bass")
     part.append(clef.BassClef())
-    part.append(key.KeySignature(0))
+    part.append(key.KeySignature(key_signature_sharps))
     part.append(_build_measure(label=None, pitches=step.display_notes))
     score.insert(0, part)
     return score
+
+
+def _exercise_prefers_flats(exercise: TrainerExercise) -> bool:
+    if exercise.mode == "major":
+        return exercise.key in MAJOR_FLAT_KEYS
+    return exercise.key in MINOR_FLAT_KEYS
+
+
+def _exercise_key_signature_sharps(exercise: TrainerExercise) -> int:
+    sharps = (
+        key.Key(exercise.key).sharps
+        if exercise.mode == "major"
+        else key.Key(exercise.key, "minor").sharps
+    )
+    return 0 if sharps is None else sharps
 
 
 def _played_upper(step: TrainerStep) -> tuple[str, ...]:

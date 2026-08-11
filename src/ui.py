@@ -75,6 +75,9 @@ SESSION_KEY_251_VARIANT: str = "trainer_251_variant"
 SESSION_KEY_251_STEP: str = "trainer_251_step"
 SESSION_KEY_251_AUTO_ADVANCE: str = "trainer_251_auto_advance"
 SESSION_KEY_251_LAST_MATCHED_STEP: str = "trainer_251_last_matched_step"
+SESSION_KEY_251_CHAIN_MODE: str = "trainer_251_chain_mode"
+SESSION_KEY_251_CHAIN_KEYS: str = "trainer_251_chain_keys"
+SESSION_KEY_251_CHAIN_INDEX: str = "trainer_251_chain_index"
 LIVE_REFRESH_INTERVAL_S: float = 0.2
 VISIBLE_251_EXERCISES = build_visible_exercises()
 
@@ -836,6 +839,12 @@ def _init_live_harmony_state() -> None:
         st.session_state[SESSION_KEY_251_AUTO_ADVANCE] = True
     if SESSION_KEY_251_LAST_MATCHED_STEP not in st.session_state:
         st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
+    if SESSION_KEY_251_CHAIN_MODE not in st.session_state:
+        st.session_state[SESSION_KEY_251_CHAIN_MODE] = False
+    if SESSION_KEY_251_CHAIN_KEYS not in st.session_state:
+        st.session_state[SESSION_KEY_251_CHAIN_KEYS] = [VISIBLE_MAJOR_KEYS[0]]
+    if SESSION_KEY_251_CHAIN_INDEX not in st.session_state:
+        st.session_state[SESSION_KEY_251_CHAIN_INDEX] = 0
 
 
 def _reset_live_harmony_session_values() -> None:
@@ -1138,13 +1147,15 @@ def _render_251_trainer(current_notes: list[str]) -> None:
         st.session_state[SESSION_KEY_251_KEY] = key_options[0]
         st.session_state[SESSION_KEY_251_STEP] = 0
         current_key = key_options[0]
+    _sync_251_chain_state(key_options=key_options, fallback_key=current_key)
 
-    col1, col2, col3, col4 = st.columns([1.2, 1, 1, 1])
+    col1, col2, col3, col4, col5 = st.columns([1.2, 1, 1, 1, 1])
     with col1:
         selected_key = st.selectbox(
             "Key",
             options=key_options,
             key=SESSION_KEY_251_KEY,
+            disabled=st.session_state.get(SESSION_KEY_251_CHAIN_MODE, False),
         )
     with col2:
         st.selectbox(
@@ -1161,7 +1172,37 @@ def _render_251_trainer(current_notes: list[str]) -> None:
     with col4:
         if st.button("↺ Restart", use_container_width=True):
             st.session_state[SESSION_KEY_251_STEP] = 0
+            st.session_state[SESSION_KEY_251_CHAIN_INDEX] = 0
             st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
+            st.rerun()
+    with col5:
+        st.toggle(
+            "Chain keys",
+            key=SESSION_KEY_251_CHAIN_MODE,
+            help="Practice several keys in sequence "
+            "and move on only after validating the current chord.",
+        )
+
+    chain_mode = st.session_state.get(SESSION_KEY_251_CHAIN_MODE, False)
+    if chain_mode:
+        selected_chain_keys = st.multiselect(
+            "Keys sequence",
+            options=key_options,
+            key=SESSION_KEY_251_CHAIN_KEYS,
+            help="The trainer will walk through these keys in order.",
+        )
+        if not selected_chain_keys:
+            st.session_state[SESSION_KEY_251_CHAIN_KEYS] = [selected_key]
+            selected_chain_keys = st.session_state[SESSION_KEY_251_CHAIN_KEYS]
+        chain_index = min(
+            int(st.session_state.get(SESSION_KEY_251_CHAIN_INDEX, 0)),
+            len(selected_chain_keys) - 1,
+        )
+        st.session_state[SESSION_KEY_251_CHAIN_INDEX] = chain_index
+        selected_key = selected_chain_keys[chain_index]
+        st.caption(
+            f"Sequence {chain_index + 1}/{len(selected_chain_keys)}: current key `{selected_key}`"
+        )
 
     exercise_id = (
         f"{st.session_state[SESSION_KEY_251_MODE]}:"
@@ -1175,7 +1216,9 @@ def _render_251_trainer(current_notes: list[str]) -> None:
     step = exercise.steps[current_step]
     match_result = compare_note_sets(step.expected_notes, current_notes)
     _maybe_auto_advance_251(
-        match_result=match_result, step_index=current_step, num_steps=len(exercise.steps)
+        match_result=match_result,
+        step_index=current_step,
+        num_steps=len(exercise.steps),
     )
 
     nav1, nav2, nav3 = st.columns([1, 1, 2])
@@ -1188,13 +1231,14 @@ def _render_251_trainer(current_notes: list[str]) -> None:
         if st.button(
             "Next →",
             use_container_width=True,
-            disabled=current_step >= len(exercise.steps) - 1,
+            disabled=chain_mode or current_step >= len(exercise.steps) - 1,
         ):
             st.session_state[SESSION_KEY_251_STEP] = current_step + 1
             st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
             st.rerun()
     with nav3:
-        st.caption(f"Step {current_step + 1}/{len(exercise.steps)}: target `{step.symbol}`")
+        suffix = f" in `{selected_key}`" if chain_mode else ""
+        st.caption(f"Step {current_step + 1}/{len(exercise.steps)}: target `{step.symbol}`{suffix}")
 
     status_col1, status_col2, status_col3 = st.columns([1.2, 1.2, 2.2])
     with status_col1:
@@ -1236,10 +1280,33 @@ def _maybe_auto_advance_251(*, match_result, step_index: int, num_steps: int) ->
         if step_index < num_steps - 1:
             st.session_state[SESSION_KEY_251_STEP] = step_index + 1
             st.rerun()
+        if st.session_state.get(SESSION_KEY_251_CHAIN_MODE, False):
+            chain_keys = st.session_state.get(SESSION_KEY_251_CHAIN_KEYS, [])
+            chain_index = int(st.session_state.get(SESSION_KEY_251_CHAIN_INDEX, 0))
+            if chain_index < len(chain_keys) - 1:
+                st.session_state[SESSION_KEY_251_CHAIN_INDEX] = chain_index + 1
+                st.session_state[SESSION_KEY_251_STEP] = 0
+                st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
+                st.rerun()
         return
 
     if not match_result.exact:
         st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
+
+
+def _sync_251_chain_state(*, key_options: list[str], fallback_key: str) -> None:
+    """Keep chained-key practice state aligned with the currently selected mode."""
+    chain_keys = st.session_state.get(SESSION_KEY_251_CHAIN_KEYS, [fallback_key])
+    filtered_keys = [key_name for key_name in chain_keys if key_name in key_options]
+    if not filtered_keys:
+        filtered_keys = [fallback_key]
+    if filtered_keys != chain_keys:
+        st.session_state[SESSION_KEY_251_CHAIN_KEYS] = filtered_keys
+
+    chain_index = int(st.session_state.get(SESSION_KEY_251_CHAIN_INDEX, 0))
+    max_index = len(filtered_keys) - 1
+    if chain_index > max_index:
+        st.session_state[SESSION_KEY_251_CHAIN_INDEX] = max_index
 
 
 def _render_chord_sequence_editor() -> None:
