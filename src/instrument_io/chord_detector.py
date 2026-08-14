@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from harmony.chord_library import detect_chord_from_notes, detect_chords_from_notes
 
 if TYPE_CHECKING:
-    from midi_io.handler import MIDIHandler
+    from instrument_io.handler import MIDIHandler
 
 logger = logging.getLogger(__name__)
 

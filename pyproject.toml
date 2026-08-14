@@ -17,6 +17,7 @@ dependencies = [
     "scipy>=1.11.0",
     "numpy>=1.24.0,<2",
     "soundfile>=0.12.1",
+    "sounddevice>=0.5.1",
     "librosa>=0.10.1,<0.11",
     "madmom @ git+https://github.com/CPJKU/madmom.git",
     "streamlit>=1.36.0",
@@ -81,8 +82,9 @@ select = [
 known-first-party = [
     "music_workbench",
     "audio_analysis",
-    "midi_io",
+    "core",
     "harmony",
+    "instrument_io",
 ]
 
 [tool.ruff.format]

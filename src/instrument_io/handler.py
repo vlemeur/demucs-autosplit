@@ -8,7 +8,9 @@ This module provides functionality to:
 - Call callbacks when notes change
 """
 
+import json
 import logging
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -157,8 +159,31 @@ def query_midi_devices() -> MIDIDeviceQueryResult:
     backend = str(getattr(mido, "backend", "unknown"))
 
     try:
-        # mido types are not recognized by ty, using type: ignore
-        devices = mido.get_input_names()  # type: ignore
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json, sys, mido; "
+                    "print(json.dumps({"
+                    "'devices': list(mido.get_input_names()), "
+                    "'backend': str(getattr(mido, 'backend', 'unknown'))"
+                    "}))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if probe.returncode != 0:
+            error_text = (probe.stderr or probe.stdout or "").strip()
+            raise RuntimeError(
+                error_text or f"MIDI probe subprocess exited with code {probe.returncode}"
+            )
+
+        payload = json.loads(probe.stdout.strip() or "{}")
+        devices = payload.get("devices", [])
+        backend = str(payload.get("backend", backend))
         logger.info(f"Found {len(devices)} MIDI input devices: {devices}")
         return MIDIDeviceQueryResult(
             devices=list(devices),

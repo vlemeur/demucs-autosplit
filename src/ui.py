@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
+import math
+import os
+import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -13,13 +17,6 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-from app_files import (
-    clear_workspace,
-    read_text_file,
-    safe_filename,
-    save_bytes_to_file,
-    validate_extension,
-)
 from audio_analysis.chord_detection import (
     get_chord_detection_backend,
     list_chord_detection_backends,
@@ -34,6 +31,13 @@ from audio_analysis.inspection import (
 )
 from audio_analysis.separation import DEFAULT_MODEL, DEMUCS_MODELS
 from audio_analysis.workspace import list_stems_wav, read_stems, run_split, zip_stems
+from core.workspace import (
+    clear_workspace,
+    read_text_file,
+    safe_filename,
+    save_bytes_to_file,
+    validate_extension,
+)
 from harmony.trainer import (
     VISIBLE_MAJOR_KEYS,
     VISIBLE_MINOR_KEYS,
@@ -45,9 +49,9 @@ from harmony.trainer import (
     render_played_chord_gallery,
     render_progression_svg,
 )
-from midi_io import query_midi_devices
-from midi_io.chord_detector import ChordDetector
-from midi_io.handler import MIDI_NOTE_TO_NAME
+from instrument_io import query_midi_devices
+from instrument_io.chord_detector import ChordDetector
+from instrument_io.handler import MIDI_NOTE_TO_NAME, MIDIDeviceQueryResult
 
 APP_TITLE: str = "🎵 Music Workbench"
 
@@ -98,9 +102,30 @@ SESSION_KEY_251_CHAIN_MODE: str = "trainer_251_chain_mode"
 SESSION_KEY_251_CHAIN_KEYS: str = "trainer_251_chain_keys"
 SESSION_KEY_251_CHAIN_INDEX: str = "trainer_251_chain_index"
 SESSION_KEY_MIDI_SELECTED_DEVICE: str = "live_selected_device"
+SESSION_KEY_MIDI_QUERY_CACHE: str = "live_midi_query_cache"
+SESSION_KEY_MIDI_QUERY_CACHE_TS: str = "live_midi_query_cache_ts"
+SESSION_KEY_AUDIO_SELECTED_DEVICE: str = "live_audio_selected_device"
+SESSION_KEY_AUDIO_INPUT_CHANNEL_CONFIG: str = "live_audio_input_channel_config"
+SESSION_KEY_AUDIO_LATENCY_PROFILE: str = "live_audio_latency_profile"
+SESSION_KEY_AUDIO_INPUT_RUNNING: str = "live_audio_input_running"
+SESSION_KEY_AUDIO_MONITOR_PID: str = "live_audio_monitor_pid"
+SESSION_KEY_AUDIO_INPUT_ERROR: str = "live_audio_input_error"
+SESSION_KEY_AUDIO_INPUT_RMS: str = "live_audio_input_rms"
+SESSION_KEY_AUDIO_INPUT_PEAK: str = "live_audio_input_peak"
+SESSION_KEY_AUDIO_INPUT_SIGNAL_PRESENT: str = "live_audio_input_signal_present"
+SESSION_KEY_AUDIO_INPUT_PER_CHANNEL_PEAKS: str = "live_audio_input_per_channel_peaks"
 LIVE_REFRESH_INTERVAL_S: float = 0.2
 VISIBLE_251_EXERCISES = build_visible_exercises()
 LIVE_CHARTS_DIR: Path = WORK_DIR / "live_charts"
+AUDIO_MONITOR_STATE_FILE: Path = WORK_DIR / "audio_monitor_state.json"
+AUDIO_MONITOR_PID_FILE: Path = WORK_DIR / "audio_monitor.pid"
+AUDIO_MONITOR_LOG_FILE: Path = WORK_DIR / "audio_monitor.log"
+MIDI_QUERY_CACHE_TTL_S: float = 3.0
+LATENCY_PROFILE_TO_BLOCKSIZE: dict[str, int] = {
+    "Stable": 512,
+    "Balanced": 256,
+    "Low latency": 128,
+}
 
 
 @dataclass(frozen=True)
@@ -223,6 +248,25 @@ class LiveHarmonySnapshot:
             )
 
 
+@dataclass(frozen=True)
+class AudioInputDevice:
+    """Audio device metadata used by the Live Harmony settings UI."""
+
+    name: str
+    index: int
+    max_input_channels: int
+    default_samplerate: float
+
+
+@dataclass(frozen=True)
+class AudioInputQueryResult:
+    """Result of audio input device enumeration."""
+
+    devices: list[AudioInputDevice]
+    backend: str
+    error: str | None = None
+
+
 def _init_session_state() -> None:
     """
     Initialize Streamlit session state keys used by the app.
@@ -247,6 +291,234 @@ def _init_session_state() -> None:
         st.session_state[SESSION_KEY_CHORD_BACKEND] = "chordmini_chordnet"
     if SESSION_KEY_CHORD_BENCHMARK not in st.session_state:
         st.session_state[SESSION_KEY_CHORD_BENCHMARK] = None
+
+
+def _dbfs_from_amplitude(amplitude: float) -> float:
+    """Convert a normalized amplitude value to dBFS."""
+    if amplitude <= 0.0:
+        return -120.0
+    return 20.0 * math.log10(min(amplitude, 1.0))
+
+
+def _get_midi_query_result(*, force_refresh: bool = False) -> MIDIDeviceQueryResult:
+    """Return MIDI device diagnostics with a short-lived session cache."""
+    cached_result = st.session_state.get(SESSION_KEY_MIDI_QUERY_CACHE)
+    cached_at = float(st.session_state.get(SESSION_KEY_MIDI_QUERY_CACHE_TS, 0.0))
+    if (
+        not force_refresh
+        and isinstance(cached_result, MIDIDeviceQueryResult)
+        and (time.time() - cached_at) < MIDI_QUERY_CACHE_TTL_S
+    ):
+        return cached_result
+
+    result = query_midi_devices()
+    st.session_state[SESSION_KEY_MIDI_QUERY_CACHE] = result
+    st.session_state[SESSION_KEY_MIDI_QUERY_CACHE_TS] = time.time()
+    return result
+
+
+def _query_audio_input_devices() -> AudioInputQueryResult:
+    """Return available audio devices for interface checks and monitoring."""
+    try:
+        import sounddevice as sd
+    except ImportError:
+        return AudioInputQueryResult(
+            devices=[],
+            backend="sounddevice unavailable",
+            error="Audio interface discovery requires the optional `sounddevice` package.",
+        )
+
+    try:
+        raw_devices = sd.query_devices()
+        backend = sd.default.hostapi
+        hostapis = sd.query_hostapis()
+        backend_name = str(hostapis[backend]["name"]) if isinstance(backend, int) else "unknown"
+    except Exception as exc:
+        return AudioInputQueryResult(devices=[], backend="unknown", error=str(exc))
+
+    devices: list[AudioInputDevice] = []
+    for index, raw_device in enumerate(raw_devices):
+        max_input_channels = int(raw_device.get("max_input_channels", 0))
+        if max_input_channels <= 0:
+            continue
+        devices.append(
+            AudioInputDevice(
+                name=str(raw_device.get("name", f"Input {index}")),
+                index=index,
+                max_input_channels=max_input_channels,
+                default_samplerate=float(raw_device.get("default_samplerate", 44100.0)),
+            )
+        )
+
+    return AudioInputQueryResult(devices=devices, backend=backend_name)
+
+
+def _build_input_channel_options(device: AudioInputDevice) -> list[tuple[str, tuple[int, ...]]]:
+    """Return selectable mono/stereo channel mappings for an input device."""
+    options: list[tuple[str, tuple[int, ...]]] = []
+    for channel_index in range(device.max_input_channels):
+        channel_number = channel_index + 1
+        options.append((f"Mono {channel_number}", (channel_index,)))
+
+    for channel_index in range(0, device.max_input_channels - 1, 2):
+        left = channel_index + 1
+        right = channel_index + 2
+        options.append((f"Stereo {left}/{right}", (channel_index, channel_index + 1)))
+
+    return options
+
+
+def _is_pid_running(pid: int | None) -> bool:
+    """Return whether a process ID appears to still be alive."""
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _read_audio_monitor_state_file() -> dict | None:
+    """Read the latest daemon state file if available."""
+    if not AUDIO_MONITOR_STATE_FILE.exists():
+        return None
+    try:
+        return json.loads(AUDIO_MONITOR_STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _read_audio_monitor_log_tail(max_chars: int = 4000) -> str | None:
+    """Return the tail of the daemon log file if it exists."""
+    if not AUDIO_MONITOR_LOG_FILE.exists():
+        return None
+    try:
+        content = AUDIO_MONITOR_LOG_FILE.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    return content[-max_chars:] if content else None
+
+
+def _audio_monitor_config_matches(
+    daemon_state: dict | None,
+    *,
+    input_device: AudioInputDevice | None,
+    input_channels: tuple[int, ...] | None,
+    blocksize: int,
+) -> bool:
+    """Return whether the running daemon matches the currently selected UI config."""
+    if daemon_state is None or input_device is None or input_channels is None:
+        return False
+    return (
+        int(daemon_state.get("input_device_index", -1)) == int(input_device.index)
+        and list(daemon_state.get("input_channels", []))
+        == [channel + 1 for channel in input_channels]
+        and int(daemon_state.get("blocksize", -1)) == int(blocksize)
+    )
+
+
+def _render_live_harmony_sidebar_controls() -> None:
+    """Render compact live-harmony controls inside the sidebar."""
+    _init_live_harmony_state()
+
+    st.header("Inputs")
+
+    if st.button("Refresh inputs", width="stretch"):
+        _get_midi_query_result(force_refresh=True)
+        st.rerun()
+
+    midi_query = _get_midi_query_result()
+    midi_devices = midi_query.devices
+    selected_midi = st.session_state.get(SESSION_KEY_MIDI_SELECTED_DEVICE)
+    if selected_midi not in midi_devices:
+        st.session_state[SESSION_KEY_MIDI_SELECTED_DEVICE] = (
+            midi_devices[0] if midi_devices else None
+        )
+        selected_midi = st.session_state.get(SESSION_KEY_MIDI_SELECTED_DEVICE)
+
+    st.caption("MIDI")
+    if midi_devices:
+        selected_midi = st.selectbox(
+            "MIDI device",
+            midi_devices,
+            index=midi_devices.index(selected_midi or midi_devices[0]),
+            key=SESSION_KEY_MIDI_SELECTED_DEVICE,
+            label_visibility="collapsed",
+        )
+        if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
+            if st.button("Stop MIDI", width="stretch"):
+                _stop_midi_listener()
+        else:
+            if st.button("Start MIDI", width="stretch"):
+                _start_midi_listener(selected_midi)
+    else:
+        st.caption("No MIDI device")
+
+    st.markdown("---")
+
+    audio_query = _query_audio_input_devices()
+    input_devices = [device for device in audio_query.devices if device.max_input_channels > 0]
+    input_names = [device.name for device in input_devices]
+    selected_audio_name = st.session_state.get(SESSION_KEY_AUDIO_SELECTED_DEVICE)
+    if selected_audio_name not in input_names:
+        st.session_state[SESSION_KEY_AUDIO_SELECTED_DEVICE] = (
+            input_names[0] if input_names else None
+        )
+        selected_audio_name = st.session_state.get(SESSION_KEY_AUDIO_SELECTED_DEVICE)
+
+    st.caption("Audio")
+    if input_devices:
+        selected_audio_name = st.selectbox(
+            "Audio input",
+            input_names,
+            index=input_names.index(selected_audio_name or input_names[0]),
+            key=SESSION_KEY_AUDIO_SELECTED_DEVICE,
+            label_visibility="collapsed",
+        )
+        selected_audio_device = next(
+            device for device in input_devices if device.name == selected_audio_name
+        )
+        channel_options = _build_input_channel_options(selected_audio_device)
+        channel_labels = [label for label, _channels in channel_options]
+        selected_channel = st.session_state.get(SESSION_KEY_AUDIO_INPUT_CHANNEL_CONFIG)
+        if selected_channel not in channel_labels:
+            st.session_state[SESSION_KEY_AUDIO_INPUT_CHANNEL_CONFIG] = channel_labels[0]
+        st.selectbox(
+            "Input channels",
+            channel_labels,
+            key=SESSION_KEY_AUDIO_INPUT_CHANNEL_CONFIG,
+            label_visibility="collapsed",
+        )
+        st.selectbox(
+            "Scan profile",
+            options=list(LATENCY_PROFILE_TO_BLOCKSIZE.keys()),
+            key=SESSION_KEY_AUDIO_LATENCY_PROFILE,
+            label_visibility="collapsed",
+        )
+        selected_channels = dict(channel_options)[
+            str(st.session_state.get(SESSION_KEY_AUDIO_INPUT_CHANNEL_CONFIG, channel_labels[0]))
+        ]
+        blocksize = LATENCY_PROFILE_TO_BLOCKSIZE[
+            str(st.session_state.get(SESSION_KEY_AUDIO_LATENCY_PROFILE, "Balanced"))
+        ]
+        daemon_state = _read_audio_monitor_state_file()
+        config_matches = _audio_monitor_config_matches(
+            daemon_state,
+            input_device=selected_audio_device,
+            input_channels=selected_channels,
+            blocksize=blocksize,
+        )
+        if st.session_state.get(SESSION_KEY_AUDIO_INPUT_RUNNING, False):
+            if st.button("Stop Audio Check", width="stretch"):
+                _stop_audio_input_monitor()
+            elif not config_matches and st.button("Apply Audio", width="stretch"):
+                _start_audio_input_monitor(selected_audio_device, selected_channels, blocksize)
+        else:
+            if st.button("Start Audio Check", width="stretch"):
+                _start_audio_input_monitor(selected_audio_device, selected_channels, blocksize)
+    else:
+        st.caption("No audio input")
 
 
 def _render_sidebar() -> tuple[str, str, str]:
@@ -312,6 +584,9 @@ def _render_sidebar() -> tuple[str, str, str]:
             )
             st.caption(get_chord_detection_backend(selected_backend).description)
 
+            st.markdown("---")
+        else:
+            _render_live_harmony_sidebar_controls()
             st.markdown("---")
 
         if st.button("🧹 Clear workspace"):
@@ -1118,6 +1393,30 @@ def _init_live_harmony_state() -> None:
         st.session_state[SESSION_KEY_251_CHAIN_INDEX] = 0
     if SESSION_KEY_MIDI_SELECTED_DEVICE not in st.session_state:
         st.session_state[SESSION_KEY_MIDI_SELECTED_DEVICE] = None
+    if SESSION_KEY_MIDI_QUERY_CACHE not in st.session_state:
+        st.session_state[SESSION_KEY_MIDI_QUERY_CACHE] = None
+    if SESSION_KEY_MIDI_QUERY_CACHE_TS not in st.session_state:
+        st.session_state[SESSION_KEY_MIDI_QUERY_CACHE_TS] = 0.0
+    if SESSION_KEY_AUDIO_SELECTED_DEVICE not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_SELECTED_DEVICE] = None
+    if SESSION_KEY_AUDIO_INPUT_CHANNEL_CONFIG not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_INPUT_CHANNEL_CONFIG] = None
+    if SESSION_KEY_AUDIO_LATENCY_PROFILE not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_LATENCY_PROFILE] = "Balanced"
+    if SESSION_KEY_AUDIO_INPUT_RUNNING not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_INPUT_RUNNING] = False
+    if SESSION_KEY_AUDIO_MONITOR_PID not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_MONITOR_PID] = None
+    if SESSION_KEY_AUDIO_INPUT_ERROR not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_INPUT_ERROR] = None
+    if SESSION_KEY_AUDIO_INPUT_RMS not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_INPUT_RMS] = 0.0
+    if SESSION_KEY_AUDIO_INPUT_PEAK not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_INPUT_PEAK] = 0.0
+    if SESSION_KEY_AUDIO_INPUT_SIGNAL_PRESENT not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_INPUT_SIGNAL_PRESENT] = False
+    if SESSION_KEY_AUDIO_INPUT_PER_CHANNEL_PEAKS not in st.session_state:
+        st.session_state[SESSION_KEY_AUDIO_INPUT_PER_CHANNEL_PEAKS] = []
 
 
 def _reset_live_harmony_session_values() -> None:
@@ -1143,6 +1442,36 @@ def _sync_live_harmony_snapshot() -> None:
     st.session_state[SESSION_KEY_LIVE_ERROR] = error
 
 
+def _sync_audio_input_snapshot() -> None:
+    """Copy the external audio monitor daemon state into Streamlit session state."""
+    daemon_state = _read_audio_monitor_state_file()
+    pid = st.session_state.get(SESSION_KEY_AUDIO_MONITOR_PID)
+    running = _is_pid_running(pid)
+
+    st.session_state[SESSION_KEY_AUDIO_INPUT_RUNNING] = running
+    if daemon_state is None:
+        if running:
+            st.session_state[SESSION_KEY_AUDIO_INPUT_ERROR] = (
+                "Audio monitor daemon started but no state has been published yet."
+            )
+        else:
+            log_tail = _read_audio_monitor_log_tail()
+            st.session_state[SESSION_KEY_AUDIO_INPUT_ERROR] = (
+                log_tail or "Audio monitor daemon did not start correctly."
+            )
+        return
+
+    st.session_state[SESSION_KEY_AUDIO_INPUT_RMS] = float(daemon_state.get("rms", 0.0))
+    st.session_state[SESSION_KEY_AUDIO_INPUT_PEAK] = float(daemon_state.get("peak", 0.0))
+    st.session_state[SESSION_KEY_AUDIO_INPUT_SIGNAL_PRESENT] = bool(
+        daemon_state.get("peak", 0.0) >= 0.02
+    )
+    st.session_state[SESSION_KEY_AUDIO_INPUT_ERROR] = daemon_state.get("error")
+    st.session_state[SESSION_KEY_AUDIO_INPUT_PER_CHANNEL_PEAKS] = list(
+        daemon_state.get("per_channel_peaks", [])
+    )
+
+
 def _stop_midi_listener() -> None:
     """Stop the MIDI listener thread if running."""
     stop_event = st.session_state.get(SESSION_KEY_LIVE_STOP_EVENT)
@@ -1161,6 +1490,21 @@ def _stop_midi_listener() -> None:
     st.session_state[SESSION_KEY_LIVE_THREAD] = None
     st.session_state[SESSION_KEY_LIVE_STOP_EVENT] = None
     _reset_live_harmony_session_values()
+
+
+def _stop_audio_input_monitor() -> None:
+    """Stop the dedicated audio monitor daemon if running."""
+    pid = st.session_state.get(SESSION_KEY_AUDIO_MONITOR_PID)
+    if isinstance(pid, int) and _is_pid_running(pid):
+        os.kill(pid, signal.SIGTERM)
+    st.session_state[SESSION_KEY_AUDIO_INPUT_RUNNING] = False
+    st.session_state[SESSION_KEY_AUDIO_MONITOR_PID] = None
+    st.session_state[SESSION_KEY_AUDIO_INPUT_RMS] = 0.0
+    st.session_state[SESSION_KEY_AUDIO_INPUT_PEAK] = 0.0
+    st.session_state[SESSION_KEY_AUDIO_INPUT_SIGNAL_PRESENT] = False
+    st.session_state[SESSION_KEY_AUDIO_INPUT_ERROR] = None
+    st.session_state[SESSION_KEY_AUDIO_INPUT_PER_CHANNEL_PEAKS] = []
+    AUDIO_MONITOR_PID_FILE.unlink(missing_ok=True)
 
 
 def _midi_listener_thread(
@@ -1263,6 +1607,186 @@ def _start_midi_listener(device_name: str) -> None:
     thread.start()
 
 
+def _start_audio_input_monitor(
+    device: AudioInputDevice,
+    selected_channels: tuple[int, ...],
+    blocksize: int,
+) -> None:
+    """Start the dedicated audio monitor daemon."""
+    _stop_audio_input_monitor()
+    AUDIO_MONITOR_STATE_FILE.unlink(missing_ok=True)
+    AUDIO_MONITOR_LOG_FILE.unlink(missing_ok=True)
+    log_handle = AUDIO_MONITOR_LOG_FILE.open("w", encoding="utf-8")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "instrument_io.audio_daemon",
+            "--input-device-index",
+            str(device.index),
+            "--input-channels",
+            ",".join(str(channel) for channel in selected_channels),
+            "--input-total-channels",
+            str(device.max_input_channels),
+            "--state-file",
+            str(AUDIO_MONITOR_STATE_FILE.resolve()),
+            "--pid-file",
+            str(AUDIO_MONITOR_PID_FILE.resolve()),
+            "--preferred-sample-rate",
+            str(device.default_samplerate),
+            "--blocksize",
+            str(blocksize),
+        ],
+        cwd=str(Path(__file__).resolve().parent),
+        start_new_session=True,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+    )
+    log_handle.close()
+    st.session_state[SESSION_KEY_AUDIO_MONITOR_PID] = process.pid
+    time.sleep(0.35)
+    exit_code = process.poll()
+    if exit_code is not None:
+        st.session_state[SESSION_KEY_AUDIO_MONITOR_PID] = None
+        st.session_state[SESSION_KEY_AUDIO_INPUT_RUNNING] = False
+        st.session_state[SESSION_KEY_AUDIO_INPUT_ERROR] = (
+            _read_audio_monitor_log_tail() or f"Audio monitor daemon exited with code {exit_code}."
+        )
+        return
+
+    st.session_state[SESSION_KEY_AUDIO_INPUT_RUNNING] = True
+    st.session_state[SESSION_KEY_AUDIO_INPUT_ERROR] = None
+
+
+def _render_audio_interface_settings() -> None:
+    """Render audio interface detection and direct-monitor readiness checks."""
+    st.subheader("🔊 Audio Interface")
+    st.caption(
+        "The useful selectors now live in the left sidebar. "
+        "This panel only shows readiness and diagnostics."
+    )
+
+    audio_query = _query_audio_input_devices()
+    audio_devices = audio_query.devices
+    input_devices = [device for device in audio_devices if device.max_input_channels > 0]
+    selected_audio_name = st.session_state.get(SESSION_KEY_AUDIO_SELECTED_DEVICE)
+    input_names = [device.name for device in input_devices]
+    if selected_audio_name not in input_names:
+        if input_devices:
+            st.session_state[SESSION_KEY_AUDIO_SELECTED_DEVICE] = input_devices[0].name
+            selected_audio_name = input_devices[0].name
+        else:
+            selected_audio_name = None
+
+    status_col, refresh_col = st.columns([2, 1])
+    with status_col:
+        if input_devices:
+            st.caption(f"{len(input_devices)} audio input(s) detected via {audio_query.backend}.")
+        else:
+            st.caption("No audio input detected for now.")
+    with refresh_col:
+        if st.button("🔄 Refresh audio", width="stretch"):
+            st.rerun()
+
+    if not input_devices:
+        if audio_query.error:
+            st.error(audio_query.error)
+        st.info("Connect or enable an audio interface input to test external instruments.")
+        return
+
+    selected_audio_device = next(
+        device for device in input_devices if device.name == selected_audio_name
+    )
+    channel_options = _build_input_channel_options(selected_audio_device)
+    channel_labels = [label for label, _channels in channel_options]
+    selected_channel_label = st.session_state.get(SESSION_KEY_AUDIO_INPUT_CHANNEL_CONFIG)
+    if selected_channel_label not in channel_labels:
+        preferred_label = "Stereo 1/2" if "Stereo 1/2" in channel_labels else channel_labels[0]
+        st.session_state[SESSION_KEY_AUDIO_INPUT_CHANNEL_CONFIG] = preferred_label
+        selected_channel_label = preferred_label
+
+    channel_options = _build_input_channel_options(selected_audio_device)
+    selected_channels = dict(channel_options)[selected_channel_label]
+    latency_profile = str(st.session_state.get(SESSION_KEY_AUDIO_LATENCY_PROFILE, "Balanced"))
+    blocksize = LATENCY_PROFILE_TO_BLOCKSIZE[latency_profile]
+    daemon_state = _read_audio_monitor_state_file()
+    config_matches = _audio_monitor_config_matches(
+        daemon_state,
+        input_device=selected_audio_device,
+        input_channels=selected_channels,
+        blocksize=blocksize,
+    )
+
+    st.caption(
+        f"Input: `{selected_audio_device.name}` | Channels: `{selected_channel_label}` | "
+        f"Scan: `{latency_profile}` | Sample rate: "
+        f"`{int(round(selected_audio_device.default_samplerate))} Hz`"
+    )
+    if st.session_state.get(SESSION_KEY_AUDIO_INPUT_RUNNING, False) and not config_matches:
+        st.warning(
+            "The running audio scan does not match the current sidebar settings. "
+            "Apply them from the left menu."
+        )
+    st.caption(
+        "Listen through Scarlett direct monitoring or Focusrite Control. "
+        "The app only verifies the input side."
+    )
+
+    audio_error = st.session_state.get(SESSION_KEY_AUDIO_INPUT_ERROR)
+    if audio_error:
+        st.error(audio_error)
+
+    rms = float(st.session_state.get(SESSION_KEY_AUDIO_INPUT_RMS, 0.0))
+    peak = float(st.session_state.get(SESSION_KEY_AUDIO_INPUT_PEAK, 0.0))
+    signal_present = bool(st.session_state.get(SESSION_KEY_AUDIO_INPUT_SIGNAL_PRESENT, False))
+    per_channel_peaks = list(st.session_state.get(SESSION_KEY_AUDIO_INPUT_PER_CHANNEL_PEAKS, []))
+    active_channels = [
+        str(channel_index + 1)
+        for channel_index, channel_peak in enumerate(per_channel_peaks)
+        if channel_peak >= 0.02
+    ]
+    midi_ready = bool(st.session_state.get(SESSION_KEY_LIVE_RUNNING, False))
+    audio_ready = signal_present
+    ready_col1, ready_col2, ready_col3 = st.columns(3)
+    with ready_col1:
+        st.metric("MIDI", "OK" if midi_ready else "Not listening")
+    with ready_col2:
+        st.metric("Audio Input", "OK" if audio_ready else "Waiting")
+    with ready_col3:
+        st.metric("Ready To Play", "YES" if (midi_ready and audio_ready) else "NO")
+
+    meter_col, stats_col = st.columns([2, 1])
+    with meter_col:
+        st.markdown("**Input level**")
+        st.progress(min(int(round(peak * 100)), 100))
+        if st.session_state.get(SESSION_KEY_AUDIO_INPUT_RUNNING, False):
+            if signal_present:
+                st.success(f"Signal detected on {selected_channel_label}.")
+            else:
+                st.warning(
+                    "No clear signal detected yet. Play a note, verify the Scarlett routing, "
+                    "or try another channel pair."
+                )
+        else:
+            st.info("Start the audio check to see live interface activity.")
+        if active_channels:
+            st.caption(f"Active input channel(s): {', '.join(active_channels)}")
+        elif st.session_state.get(SESSION_KEY_AUDIO_INPUT_RUNNING, False):
+            st.caption("No input channel is currently showing a detectable level.")
+
+    with stats_col:
+        st.metric("Peak", f"{_dbfs_from_amplitude(peak):.1f} dBFS")
+        st.metric("RMS", f"{_dbfs_from_amplitude(rms):.1f} dBFS")
+
+    st.markdown("**Per-channel input scan**")
+    if per_channel_peaks:
+        for channel_index, channel_peak in enumerate(per_channel_peaks, start=1):
+            st.caption(f"Input {channel_index}: {_dbfs_from_amplitude(channel_peak):.1f} dBFS")
+            st.progress(min(int(round(channel_peak * 100)), 100))
+    else:
+        st.caption("Start the audio check to scan all input channels.")
+
+
 def _render_live_harmony_tab() -> None:
     """
     Render the Live Harmony tab for real-time MIDI chord detection.
@@ -1273,6 +1797,7 @@ def _render_live_harmony_tab() -> None:
     """
     _init_live_harmony_state()
     _sync_live_harmony_snapshot()
+    _sync_audio_input_snapshot()
 
     live_thread = st.session_state.get(SESSION_KEY_LIVE_THREAD)
     if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False) and (
@@ -1289,10 +1814,10 @@ def _render_live_harmony_tab() -> None:
     )
 
     settings_tab, detection_tab, trainer_tab = st.tabs(
-        ["MIDI Settings", "Chord Detection", "Jazz Trainer"]
+        ["Input Settings", "Chord Detection", "Jazz Trainer"]
     )
 
-    midi_query = query_midi_devices()
+    midi_query = _get_midi_query_result()
     devices = midi_query.devices
     selected_device_name = st.session_state.get(SESSION_KEY_MIDI_SELECTED_DEVICE)
     if selected_device_name not in devices:
@@ -1303,84 +1828,9 @@ def _render_live_harmony_tab() -> None:
             selected_device_name = None
 
     with settings_tab:
-        st.subheader("🎛️ MIDI Settings")
-        refresh_col, status_col = st.columns([1, 2])
-
-        with refresh_col:
-            if st.button("🔄 Refresh devices", width="stretch"):
-                st.rerun()
-
-        with status_col:
-            if devices:
-                st.caption(f"{len(devices)} MIDI input device(s) detected.")
-            else:
-                st.caption("No MIDI input device detected for now.")
-
-        if not devices:
-            if midi_query.error:
-                st.error("Unable to query MIDI input devices from the current app environment.")
-                st.code(
-                    "\n".join(
-                        [
-                            f"Python: {midi_query.python_executable}",
-                            f"Mido backend: {midi_query.backend}",
-                            f"Error: {midi_query.error}",
-                        ]
-                    ),
-                    language="text",
-                )
-                st.info(
-                    "The debug script and Streamlit are probably not running in the same "
-                    "Python environment. Launch the app with `uv run streamlit run src/ui.py` "
-                    "if your MIDI debug script works with `uv run python ...`."
-                )
-            else:
-                st.warning(
-                    "No MIDI input devices found. "
-                    "Make sure your keyboard is connected and the driver is installed."
-                )
-            st.markdown(
-                """
-                **Troubleshooting:**
-                - On macOS: Check Audio MIDI Setup app to verify your device is connected
-                - Make sure your keyboard is set to send MIDI (not just audio)
-                - Try closing and reopening other MIDI applications
-                - Launch Streamlit from the same environment as the MIDI debug script
-                """
-            )
-        else:
-            resolved_selected_device = selected_device_name or devices[0]
-            with st.expander("MIDI diagnostics", expanded=False):
-                st.code(
-                    "\n".join(
-                        [
-                            f"Python: {midi_query.python_executable}",
-                            f"Mido backend: {midi_query.backend}",
-                            f"Detected devices: {len(devices)}",
-                        ]
-                    ),
-                    language="text",
-                )
-
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                selected_device = st.selectbox(
-                    "Select MIDI Input Device",
-                    devices,
-                    index=devices.index(resolved_selected_device),
-                    key=SESSION_KEY_MIDI_SELECTED_DEVICE,
-                    help="Choose your MIDI keyboard or controller",
-                )
-
-            with col2:
-                if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
-                    if st.button("⏹️ Stop", type="secondary", width="stretch"):
-                        _stop_midi_listener()
-                        st.success("MIDI listener stopped")
-                else:
-                    if st.button("▶️ Start", type="primary", width="stretch"):
-                        _start_midi_listener(selected_device)
-                        st.success(f"Listening to {selected_device}...")
+        st.subheader("🎛️ Instrument Inputs")
+        st.caption("The useful selectors and start/stop actions now live in the left sidebar.")
+        _render_audio_interface_settings()
 
     live_error = st.session_state.get(SESSION_KEY_LIVE_ERROR)
     current_notes = st.session_state.get(SESSION_KEY_LIVE_NOTES, [])
@@ -1393,7 +1843,7 @@ def _render_live_harmony_tab() -> None:
         show_alts = st.toggle("Show alternatives", value=False)
 
         if not devices:
-            st.info("Connect and refresh a MIDI input device from the MIDI Settings tab.")
+            st.info("Connect and refresh a MIDI input device from the Input Settings tab.")
         else:
             if live_error:
                 st.error(live_error)
@@ -1451,13 +1901,15 @@ def _render_live_harmony_tab() -> None:
     with trainer_tab:
         st.subheader("🎼 Jazz Trainer")
         if not devices:
-            st.info("Connect and refresh a MIDI input device from the MIDI Settings tab.")
+            st.info("Connect and refresh a MIDI input device from the Input Settings tab.")
         else:
             if live_error:
                 st.error(live_error)
             _render_251_trainer(current_notes=current_notes)
 
-    if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
+    if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False) or st.session_state.get(
+        SESSION_KEY_AUDIO_INPUT_RUNNING, False
+    ):
         time.sleep(LIVE_REFRESH_INTERVAL_S)
         st.rerun()
 
