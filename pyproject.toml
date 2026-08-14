@@ -13,10 +13,11 @@ dependencies = [
     # Other platforms (Linux, Windows, macOS arm64)
     "torch>=2.10.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "torchaudio>=2.10.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
-    "demucs>=4.0.0",
+    "demucs-infer>=4.2.2",
     "scipy>=1.11.0",
     "numpy>=1.24.0,<2",
     "soundfile>=0.12.1",
+    "librosa>=0.10.1,<0.11",
     "madmom @ git+https://github.com/CPJKU/madmom.git",
     "streamlit>=1.36.0",
     "watchdog>=4.0.0",
@@ -26,6 +27,12 @@ dependencies = [
     "music21>=10.5.0",
     "verovio>=6.2.1",
     "chardet>=5,<6",
+    "PyYAML>=6,<7",
+    "tqdm>=4.67,<5",
+    "mir_eval>=0.8.2,<0.9",
+    "matplotlib>=3.10,<4",
+    "seaborn>=0.13,<0.14",
+    "scikit-learn>=1.6,<2",
 ]
 
 
@@ -71,7 +78,12 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["music_workbench", "demucs_audiosplit"]
+known-first-party = [
+    "music_workbench",
+    "audio_analysis",
+    "midi_io",
+    "harmony",
+]
 
 [tool.ruff.format]
 quote-style = "double"

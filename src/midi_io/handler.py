@@ -9,7 +9,9 @@ This module provides functionality to:
 """
 
 import logging
+import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import mido
 
@@ -17,6 +19,17 @@ logger = logging.getLogger(__name__)
 
 # Type alias for note callback
 NoteCallback = Callable[[list[str]], None]
+
+
+@dataclass(frozen=True)
+class MIDIDeviceQueryResult:
+    """Result of a MIDI device discovery query."""
+
+    devices: list[str]
+    error: str | None
+    backend: str
+    python_executable: str
+
 
 # MIDI note number to note name mapping (0-127)
 MIDI_NOTE_TO_NAME: list[str] = [
@@ -139,6 +152,30 @@ MIDI_NOTE_TO_NAME: list[str] = [
 ]
 
 
+def query_midi_devices() -> MIDIDeviceQueryResult:
+    """Query available MIDI input devices and return diagnostics."""
+    backend = str(getattr(mido, "backend", "unknown"))
+
+    try:
+        # mido types are not recognized by ty, using type: ignore
+        devices = mido.get_input_names()  # type: ignore
+        logger.info(f"Found {len(devices)} MIDI input devices: {devices}")
+        return MIDIDeviceQueryResult(
+            devices=list(devices),
+            error=None,
+            backend=backend,
+            python_executable=sys.executable,
+        )
+    except Exception as e:
+        logger.error(f"Failed to list MIDI devices: {e}")
+        return MIDIDeviceQueryResult(
+            devices=[],
+            error=str(e),
+            backend=backend,
+            python_executable=sys.executable,
+        )
+
+
 def list_midi_devices() -> list[str]:
     """
     List all available MIDI input device names.
@@ -148,14 +185,7 @@ def list_midi_devices() -> list[str]:
     list[str]
         List of MIDI input device names. Returns empty list if no devices found.
     """
-    try:
-        # mido types are not recognized by ty, using type: ignore
-        devices = mido.get_input_names()  # type: ignore
-        logger.info(f"Found {len(devices)} MIDI input devices: {devices}")
-        return devices
-    except Exception as e:
-        logger.error(f"Failed to list MIDI devices: {e}")
-        return []
+    return query_midi_devices().devices
 
 
 class MIDIHandler:

@@ -1,9 +1,9 @@
-import subprocess
-import sys
 from pathlib import Path
 
-from demucs_audiosplit import logger
-from demucs_audiosplit.filters import apply_simple_filters
+import soundfile as sf
+
+from audio_analysis import logger
+from audio_analysis.filters import apply_simple_filters
 
 # Available Demucs v4 models (Hybrid Transformer)
 # These are the state-of-the-art models with the best quality
@@ -14,7 +14,7 @@ DEMUCS_MODELS: tuple[str, ...] = (
 )
 
 # Default model
-DEFAULT_MODEL: str = "htdemucs"
+DEFAULT_MODEL: str = "htdemucs_ft"
 
 # Maximum segment length for Hybrid Transformer models (in seconds)
 # These models cannot handle segments longer than 7.8 seconds
@@ -78,6 +78,27 @@ def _get_model_dir(model: str) -> str:
     """
     # Demucs uses the model name as the directory
     return model
+
+
+def _resolve_inference_device(requested_device: str) -> str:
+    """Resolve the runtime device string for demucs-infer."""
+    if requested_device != "auto":
+        return requested_device
+
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _save_stem_waveform(stem_path: Path, waveform, sample_rate: int) -> None:
+    """Save a separated stem with soundfile to avoid torchcodec save issues."""
+    audio = waveform.detach().cpu().numpy().T
+    stem_path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(stem_path, audio, sample_rate)
 
 
 def run_demucs(
@@ -172,67 +193,56 @@ def run_demucs(
 
     logger.info("🔍 Separating '%s' with model %s", file_path.name, model)
 
-    # Build the command
-    cmd = [
-        sys.executable,
-        "-m",
-        "demucs.separate",
-        "--out",
-        str(output_dir),
-        "-n",
-        model,
-        "--segment",
-        str(segment),
-        "--overlap",
-        str(overlap),
-        "--shifts",
-        str(shifts),
-    ]
-
-    # Only add device if it's not "auto" - Demucs handles auto-detection by default
-    if device != "auto":
-        cmd.extend(["-d", device])
-
     if two_stems:
-        cmd.extend(["--two-stems", two_stems])
-
+        logger.warning(
+            "two_stems=%s was requested, but the in-process demucs-infer path currently writes "
+            "full stem sets only. Continuing with the full model output.",
+            two_stems,
+        )
     if mp3:
-        cmd.extend(["--mp3", "--mp3-bitrate", str(mp3_bitrate)])
-
-    cmd.append(str(file_path))
+        logger.warning(
+            "mp3 output was requested, but the in-process demucs-infer path currently writes WAV "
+            "stems only. Continuing with WAV output."
+        )
 
     try:
-        completed = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=3600,  # 1 hour timeout
-        )
-    except subprocess.TimeoutExpired:
-        logger.error("❌ Demucs timed out after 1 hour for %s", file_path.name)
-        return None
-    except subprocess.CalledProcessError as exc:
-        logger.error(
-            "❌ Failed to process %s with model %s (returncode=%s).\nstdout: %s\nstderr: %s",
-            file_path.name,
-            model,
-            exc.returncode,
-            (exc.stdout or "").strip(),
-            (exc.stderr or "").strip(),
-        )
-        return None
-    except FileNotFoundError:
-        logger.error("❌ Demucs is not installed in the current Python environment.")
+        from demucs_infer.api import Separator
+    except ModuleNotFoundError:
+        logger.error("❌ demucs-infer is not installed in the current Python environment.")
         return None
 
-    if completed.stdout.strip():
-        logger.info("%s", completed.stdout.strip())
+    resolved_device = _resolve_inference_device(device)
+
+    try:
+        separator = Separator(
+            model=model,
+            device=resolved_device,
+            shifts=shifts,
+            overlap=overlap,
+            split=True,
+            segment=segment,
+            jobs=0,
+            progress=False,
+        )
+        _, separated = separator.separate_audio_file(file_path)
+        sample_rate = int(separator.samplerate)
+
+        stem_dir.mkdir(parents=True, exist_ok=True)
+        for stem_name, waveform in separated.items():
+            _save_stem_waveform(stem_dir / f"{stem_name}.wav", waveform, sample_rate)
+    except Exception as exc:
+        logger.exception(
+            "❌ Failed to process %s with model %s via demucs-infer Python API: %s",
+            file_path.name,
+            model,
+            exc,
+        )
+        return None
 
     # Verify stems were created
     if not all(path.exists() for path in existing):
         logger.error(
-            "❌ Demucs completed but expected stems not found for model %s in %s",
+            "❌ demucs-infer completed but expected stems not found for model %s in %s",
             model,
             stem_dir,
         )

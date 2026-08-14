@@ -1,6 +1,6 @@
 # 🎵 Music Workbench
 
-> A comprehensive music production toolkit powered by [Demucs](https://github.com/facebookresearch/demucs), written in Python with a Streamlit interface.
+> A comprehensive music production toolkit powered by [demucs-infer](https://github.com/openmirlab/demucs-infer), written in Python with a Streamlit interface.
 
 Repository name: `music-workbench`
 
@@ -15,9 +15,9 @@ Music Workbench provides tools for musicians, producers, and learners:
 
 ### 🎚️ Stem Separation
 * 🔹 Upload `.wav` or `.mp3` audio files
-* 🔹 Automatic stem separation using Demucs (vocals, drums, bass, other, guitar, piano)
+* 🔹 Automatic stem separation using Demucs-compatible inference (vocals, drums, bass, other, guitar, piano)
 * 🔹 Download individual stems or all stems as a ZIP
-* 🔹 Support for multiple Demucs models (htdemucs, htdemucs_ft, htdemucs_6s)
+* 🔹 Support for multiple Demucs-family models (htdemucs, htdemucs_ft, htdemucs_6s)
 
 ### 🎼 Chord Detection
 * 🔹 Detect chords from audio stems using Madmom's deep learning pipeline
@@ -51,13 +51,16 @@ uv sync
 uv pip install -e .
 ```
 
-This project pins `torch` / `torchaudio` to versions that avoid the newer
-`torchcodec` runtime requirement on most platforms. If your virtualenv was
-created before that change, refresh it with:
+This project uses `demucs-infer` as the maintained inference backend for stem
+separation. The app uses its in-process Python API and writes WAV stems with
+`soundfile`.
 
-```bash
-uv sync
-```
+`uv sync` also installs the Python dependencies needed by the optional
+`ChordMini` chord-recognition backends. The first time you run one of those
+backends from the app or CLI, Music Workbench will auto-download the ChordMini
+repository into `.cache/chordmini/` unless you point `CHORDMINI_DIR` to an
+existing local checkout.
+
 
 ### 3. (Optional) Enable prek hooks
 
@@ -103,7 +106,7 @@ Music Workbench exposes three main workflows:
 
 ### 🎚️ Stem Separation Tab
 * Upload an audio file (`.wav` or `.mp3`)
-* Run Demucs separation with your choice of model
+* Run stem separation with your choice of model
 * Preview and download the resulting stems (vocals, drums, bass, other, etc.)
 
 ### 🎼 Chord Detection Tab
@@ -145,11 +148,10 @@ If several MIDI inputs are available, the script selects the first one by defaul
 
 ## 🧠 Notes
 
-* The application runs Demucs from the active Python environment.
+* The application runs `demucs-infer` from the active Python environment.
 * Output files are stored in a local workspace directory (`.streamlit_workdir/`).
 * NumPy is pinned to `<2` for compatibility with PyTorch / torchaudio.
 * For portability, the project pins `torchaudio` below `2.9` on non-Intel platforms.
-* The product/repository name is `Music Workbench`; the internal package name `demucs_audiosplit` is still used in the codebase for compatibility.
 
 ---
 

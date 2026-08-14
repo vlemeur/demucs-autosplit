@@ -3,7 +3,7 @@ import logging
 
 def setup_logger(name: str) -> logging.Logger:
     """
-    Set up and reæturn a logger with a standard console formatter.
+    Set up and return a logger with a standard console formatter.
 
     Parameters
     ----------
@@ -30,3 +30,5 @@ def setup_logger(name: str) -> logging.Logger:
 
 
 logger = setup_logger(__name__)
+
+__all__ = ["logger", "setup_logger"]

@@ -3,7 +3,7 @@ from pathlib import Path
 import torchaudio
 from torchaudio.functional import bandpass_biquad, highpass_biquad
 
-from demucs_audiosplit import logger
+from audio_analysis import logger
 
 
 def apply_simple_filters(
