@@ -759,7 +759,7 @@ def _export_detected_cards_svg(steps: tuple[TrainerStep, ...]) -> str:
             f"<svg xmlns='http://www.w3.org/2000/svg' width='{outer_width}' "
             f"height='{outer_height}' viewBox='0 0 {outer_width} {outer_height}'>"
         ),
-        ("<rect x='0' y='0' width='100%' height='100%' " "fill='#f8fafc' rx='24' ry='24'/>"),
+        ("<rect x='0' y='0' width='100%' height='100%' fill='#f8fafc' rx='24' ry='24'/>"),
     ]
 
     for index, step in enumerate(steps):
