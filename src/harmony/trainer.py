@@ -877,6 +877,11 @@ def _detected_step_from_label(label: str, *, single_hand: bool = False) -> Train
     root_pc = NOTE_NAME_TO_PITCH_CLASS[root]
     bass_pc = NOTE_NAME_TO_PITCH_CLASS[bass] if bass else root_pc
     upper_pitch_classes = _quality_to_pitch_classes(root_pc, quality)
+    right_hand_pitch_classes = _detected_right_hand_pitch_classes(
+        root_pc=root_pc,
+        bass_pc=bass_pc,
+        quality=quality,
+    )
 
     if single_hand:
         single_hand_pitch_classes = [bass_pc]
@@ -908,7 +913,7 @@ def _detected_step_from_label(label: str, *, single_hand: bool = False) -> Train
             prefer_flats=prefer_flats,
         )
         for pitch_class, target in zip(
-            upper_pitch_classes,
+            right_hand_pitch_classes,
             (60, 64, 67, 71),
             strict=False,
         )
@@ -1018,6 +1023,31 @@ def _quality_to_pitch_classes(root_pitch_class: int, quality: str) -> tuple[int,
         intervals = (4, 7)
 
     return tuple((root_pitch_class + interval) % 12 for interval in intervals)
+
+
+def _detected_right_hand_pitch_classes(
+    *,
+    root_pc: int,
+    bass_pc: int,
+    quality: str,
+) -> tuple[int, ...]:
+    """
+    Build a practical right-hand pitch-class set for detected chord voicings.
+
+    For slash chords, keep the slash bass in the left hand and make sure the
+    harmonic root remains visible in the right hand instead of duplicating the
+    slash note.
+    """
+    chord_tones = [root_pc, *_quality_to_pitch_classes(root_pc, quality)]
+    if bass_pc == root_pc:
+        return tuple(dict.fromkeys(chord_tones))
+
+    right_hand = [root_pc]
+    for pitch_class in chord_tones:
+        if pitch_class in {bass_pc, root_pc}:
+            continue
+        right_hand.append(pitch_class)
+    return tuple(dict.fromkeys(right_hand))
 
 
 def _trainer_style_block() -> str:

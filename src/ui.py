@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import subprocess
 import threading
 import time
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from audio_analysis.separation import DEFAULT_MODEL, DEMUCS_MODELS
 from harmony.trainer import (
@@ -58,8 +60,6 @@ MODEL_STEMS: dict[str, list[str]] = {
 
 # Session state keys
 SESSION_KEY_STEMS_DIR: str = "stems_dir"
-SESSION_KEY_CLIP_BYTES: str = "clip_bytes"
-SESSION_KEY_CLIP_LABEL: str = "clip_label"
 SESSION_KEY_ZOOM_START_S: str = "zoom_start_s"
 SESSION_KEY_ZOOM_END_S: str = "zoom_end_s"
 SESSION_KEY_SELECTED_MODEL: str = "selected_model"
@@ -217,10 +217,6 @@ def _init_session_state() -> None:
     """
     if SESSION_KEY_STEMS_DIR not in st.session_state:
         st.session_state[SESSION_KEY_STEMS_DIR] = None
-    if SESSION_KEY_CLIP_BYTES not in st.session_state:
-        st.session_state[SESSION_KEY_CLIP_BYTES] = None
-    if SESSION_KEY_CLIP_LABEL not in st.session_state:
-        st.session_state[SESSION_KEY_CLIP_LABEL] = None
     if SESSION_KEY_ZOOM_START_S not in st.session_state:
         st.session_state[SESSION_KEY_ZOOM_START_S] = 0.0
     if SESSION_KEY_ZOOM_END_S not in st.session_state:
@@ -305,8 +301,6 @@ def _render_sidebar() -> tuple[str, str, str]:
         if st.button("🧹 Clear workspace"):
             clear_workspace(WORK_DIR)
             st.session_state[SESSION_KEY_STEMS_DIR] = None
-            st.session_state[SESSION_KEY_CLIP_BYTES] = None
-            st.session_state[SESSION_KEY_CLIP_LABEL] = None
             st.success("Workspace cleared.")
 
     return selected_model, active_workspace, selected_backend
@@ -823,39 +817,54 @@ def _render_playback_controls(input_wav: Path, duration_s: float) -> None:
                 f"({visible_range_duration:.1f}s)"
             )
     with col2:
-        play_selection = st.button(
-            "▶️ Play selection" if not is_full_track else "▶️ Play full track",
-            type="secondary",
-            width="stretch",
-            disabled=visible_range_duration <= 0.0,
+        st.caption("The player updates automatically when the visible range changes.")
+
+    if visible_range_duration <= 0.0:
+        st.warning("The current selection is empty.")
+        return
+
+    try:
+        clip_bytes, clip_duration = extract_wav_clip_bytes(
+            wav_path=input_wav,
+            start_s=float(zoom_start),
+            duration_s=float(visible_range_duration),
         )
+    except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:
+        st.error(str(exc))
+        return
 
-    if play_selection:
-        try:
-            clip_bytes, clip_duration = extract_wav_clip_bytes(
-                wav_path=input_wav,
-                start_s=float(zoom_start),
-                duration_s=float(visible_range_duration),
-            )
-        except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:
-            st.error(str(exc))
-            return
+    if not clip_bytes or clip_duration <= 0.0:
+        st.warning("No playable audio was found in the current selection.")
+        return
 
-        if not clip_bytes:
-            st.warning("Clip start is beyond the end of the file.")
-            return
-
-        st.session_state[SESSION_KEY_CLIP_BYTES] = clip_bytes
-        st.session_state[SESSION_KEY_CLIP_LABEL] = (
-            f"{zoom_start:.1f}s → {zoom_start + clip_duration:.1f}s"
-        )
-
-    clip = st.session_state.get(SESSION_KEY_CLIP_BYTES)
-    clip_label = st.session_state.get(SESSION_KEY_CLIP_LABEL)
-    if clip:
-        if clip_label:
-            st.caption(f"Playing: {clip_label}")
-        st.audio(clip, format="audio/wav")
+    st.caption(f"Selection clip: {zoom_start:.1f}s → {zoom_start + clip_duration:.1f}s")
+    audio_base64 = base64.b64encode(clip_bytes).decode("ascii")
+    player_id = (
+        f"audio-player-{int(round(zoom_start * 10))}-"
+        f"{int(round((zoom_start + clip_duration) * 10))}"
+    )
+    player_html = f"""
+    <div style="width: 100%;">
+      <audio id="{player_id}" controls preload="metadata" style="width: 100%;">
+        Your browser does not support the audio element.
+      </audio>
+    </div>
+    <script>
+      (function() {{
+        const audio = document.getElementById("{player_id}");
+        const base64 = "{audio_base64}";
+        const binary = window.atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {{
+          bytes[i] = binary.charCodeAt(i);
+        }}
+        const blob = new Blob([bytes], {{ type: "audio/wav" }});
+        const url = URL.createObjectURL(blob);
+        audio.src = url;
+      }})();
+    </script>
+    """
+    components.html(player_html, height=80)
 
 
 def _render_chords_results_expander(output_lab: Path) -> None:

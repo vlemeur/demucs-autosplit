@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+from scipy.signal import resample_poly
 
 from audio_analysis.chord_detection import (
     ChordBenchmarkResult,
@@ -70,6 +71,16 @@ def extract_wav_clip_bytes(
 
     end_idx = min(n_samples, start_idx + int(round(duration_s * sr)))
     clip = audio[start_idx:end_idx]
+    if clip.size == 0:
+        return b"", 0.0
+
+    # Keep playback previews lightweight and broadly compatible.
+    clip = clip.mean(axis=1, keepdims=True).astype(np.float32, copy=False)
+    target_sample_rate = 22_050
+    if int(sample_rate) != target_sample_rate:
+        clip = resample_poly(clip, up=target_sample_rate, down=int(sample_rate), axis=0)
+        sample_rate = target_sample_rate
+        sr = float(sample_rate)
 
     buffer = io.BytesIO()
     try:
@@ -79,6 +90,58 @@ def extract_wav_clip_bytes(
 
     clip_duration = float(clip.shape[0]) / sr
     return buffer.getvalue(), clip_duration
+
+
+def extract_audio_clip_array(
+    wav_path: Path, start_s: float, duration_s: float
+) -> tuple[np.ndarray, int, float]:
+    """
+    Extract an audio clip and return samples for direct Streamlit playback.
+
+    Parameters
+    ----------
+    wav_path : Path
+        Input WAV path.
+    start_s : float
+        Clip start time in seconds.
+    duration_s : float
+        Desired clip duration in seconds.
+
+    Returns
+    -------
+    clip_audio : numpy.ndarray
+        Audio samples shaped for `st.audio`: (channels, samples) or (samples,).
+    sample_rate : int
+        Sample rate in Hz.
+    clip_duration_s : float
+        Actual clip duration in seconds.
+    """
+    if not wav_path.exists():
+        raise FileNotFoundError(f"File not found: {wav_path}")
+    if start_s < 0.0:
+        raise ValueError("start_s must be >= 0")
+    if duration_s <= 0.0:
+        raise ValueError("duration_s must be > 0")
+
+    try:
+        audio, sample_rate = sf.read(wav_path, always_2d=True)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read audio: {wav_path}") from exc
+
+    n_samples = int(audio.shape[0])
+    sr = float(sample_rate)
+
+    start_idx = int(round(start_s * sr))
+    if start_idx >= n_samples:
+        return np.empty(0, dtype=np.float32), int(sample_rate), 0.0
+
+    end_idx = min(n_samples, start_idx + int(round(duration_s * sr)))
+    clip = audio[start_idx:end_idx].astype(np.float32, copy=False)
+    clip_duration = float(clip.shape[0]) / sr
+
+    if clip.shape[1] == 1:
+        return clip[:, 0], int(sample_rate), clip_duration
+    return clip.T, int(sample_rate), clip_duration
 
 
 @dataclass(frozen=True)
