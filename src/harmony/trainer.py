@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from functools import lru_cache
 from html import escape
+from math import ceil
 from pathlib import Path
 
 import verovio
 from music21 import chord, clef, expressions, key, layout, meter, musicxml, note, stream
+
+from harmony.chord_library import get_chord_notes
 
 NOTATION_BACKEND_AVAILABLE = True
 NOTATION_BACKEND_ERROR = ""
@@ -16,25 +20,39 @@ NOTATION_BACKEND_ERROR = ""
 NOTE_NAME_TO_PITCH_CLASS: dict[str, int] = {
     "C": 0,
     "B#": 0,
+    "Dbb": 0,
     "C#": 1,
     "Db": 1,
+    "B##": 1,
     "D": 2,
+    "C##": 2,
+    "Ebb": 2,
     "D#": 3,
     "Eb": 3,
+    "Fbb": 3,
     "E": 4,
     "Fb": 4,
+    "D##": 4,
     "E#": 5,
     "F": 5,
+    "Gbb": 5,
     "F#": 6,
     "Gb": 6,
+    "E##": 6,
     "G": 7,
+    "F##": 7,
+    "Abb": 7,
     "G#": 8,
     "Ab": 8,
     "A": 9,
+    "G##": 9,
+    "Bbb": 9,
     "A#": 10,
     "Bb": 10,
+    "Cbb": 10,
     "B": 11,
     "Cb": 11,
+    "A##": 11,
 }
 
 FLAT_NOTE_NAMES: list[str] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
@@ -375,17 +393,13 @@ class NoteMatchResult:
 
 
 def note_name_to_midi(note_name: str) -> int:
-    accidental = ""
-    octave_text = note_name[-1]
-    if not octave_text.isdigit():
+    match = re.fullmatch(r"([A-G])([#b]{0,2})(-?\d+)", note_name)
+    if match is None:
         msg = f"Unsupported note name: {note_name}"
         raise ValueError(msg)
 
-    if len(note_name) >= 3 and note_name[1] in {"#", "b"}:
-        accidental = note_name[1]
-
-    note_key = note_name[0] + accidental
-    octave = int(octave_text)
+    note_key = match.group(1) + match.group(2)
+    octave = int(match.group(3))
     pitch_class = NOTE_NAME_TO_PITCH_CLASS[note_key]
     return 12 * (octave + 1) + pitch_class
 
@@ -550,12 +564,14 @@ def render_detected_voicing_gallery(
         (
             "<div class='detected-voicing-card'>"
             f"<div class='detected-voicing-label'>{escape(step.symbol)}</div>"
-            f"{_render_score_svg(
-                _single_step_musicxml(step),
-                'trainer-score trainer-score--detected',
-                scale=26,
-                page_width=220,
-            )}"
+            f"{
+                _render_score_svg(
+                    _single_step_musicxml(step),
+                    'trainer-score trainer-score--detected',
+                    scale=26,
+                    page_width=220,
+                )
+            }"
             "</div>"
         )
         for step in steps
@@ -566,6 +582,220 @@ def render_detected_voicing_gallery(
         f"<div class='detected-voicing-grid'>{cards}</div>"
         "</div>"
     )
+
+
+def render_played_chord_gallery(
+    chord_entries: list[tuple[str, tuple[str, ...]]] | tuple[tuple[str, tuple[str, ...]], ...],
+    *,
+    single_hand: bool = False,
+) -> str:
+    """Render captured live chords using the actual played notes on staff."""
+    if not NOTATION_BACKEND_AVAILABLE:
+        return _render_notation_error()
+
+    cards: list[str] = []
+    for label, played_notes in chord_entries:
+        step = _played_step_from_label_and_notes(
+            label,
+            played_notes,
+            single_hand=single_hand,
+        )
+        cards.append(
+            "<div class='detected-voicing-card'>"
+            f"<div class='detected-voicing-label'>{escape(step.symbol)}</div>"
+            f"{
+                _render_score_svg(
+                    _single_step_musicxml(step),
+                    'trainer-score trainer-score--detected',
+                    scale=22,
+                    page_width=180,
+                )
+            }"
+            "</div>"
+        )
+
+    if not cards:
+        return (
+            "<div class='trainer-wrap'>"
+            f"{_trainer_style_block()}"
+            "<div class='trainer-error'>No captured chords yet.</div>"
+            "</div>"
+        )
+
+    return (
+        "<div class='trainer-wrap'>"
+        f"{_trainer_style_block()}"
+        f"<div class='detected-voicing-grid'>{''.join(cards)}</div>"
+        "</div>"
+    )
+
+
+def export_live_chord_progression_svg(
+    chord_entries: list[tuple[str, tuple[str, ...]]] | tuple[tuple[str, tuple[str, ...]], ...],
+    *,
+    single_hand: bool = False,
+) -> str:
+    """Export the live chord chart as a standalone SVG string."""
+    if not NOTATION_BACKEND_AVAILABLE:
+        return ""
+
+    steps = tuple(
+        _played_step_from_label_and_notes(label, played_notes, single_hand=single_hand)
+        for label, played_notes in chord_entries
+    )
+    if not steps:
+        return ""
+    return _export_detected_cards_svg(steps)
+
+
+def display_chord_symbol(label: str) -> str:
+    """Public formatter for detected chord labels."""
+    return _display_chord_symbol(label)
+
+
+def _played_step_from_label_and_notes(
+    label: str,
+    played_notes: tuple[str, ...],
+    *,
+    single_hand: bool,
+) -> TrainerStep:
+    symbol = _display_chord_symbol(label)
+    normalized_notes = _normalize_played_notes_for_label(label, played_notes)
+    if single_hand:
+        return TrainerStep(
+            symbol=symbol,
+            expected_notes=normalized_notes,
+            display_notes=normalized_notes,
+            lower_notes=(),
+            upper_notes=(),
+            staff="treble",
+        )
+
+    upper_notes, lower_notes = _split_played_notes_for_staff(
+        played_notes=list(normalized_notes),
+        staff="grand",
+    )
+    return TrainerStep(
+        symbol=symbol,
+        expected_notes=normalized_notes,
+        display_notes=normalized_notes,
+        lower_notes=lower_notes,
+        upper_notes=upper_notes,
+        staff="grand",
+    )
+
+
+def _detected_label_prefers_flats(label: str) -> bool:
+    root, quality, bass = _parse_detected_chord_label(label)
+    if root is None:
+        return False
+    if "#" in quality:
+        return False
+    if "b" in quality:
+        return True
+    if "b" in root or (bass is not None and "b" in bass):
+        return True
+    if "#" in root or (bass is not None and "#" in bass):
+        return False
+
+    normalized_quality = quality.lower().replace(":", "")
+    if normalized_quality.startswith(("min", "m")):
+        return root in MINOR_FLAT_KEYS
+    return root in MAJOR_FLAT_KEYS
+
+
+def _normalize_played_notes_for_label(label: str, played_notes: tuple[str, ...]) -> tuple[str, ...]:
+    prefer_flats = _detected_label_prefers_flats(label)
+    root, _quality, bass = _parse_detected_chord_label(label)
+    canonical_notes = get_chord_notes(label)
+    canonical_map: dict[int, str] = {}
+    for note_name in canonical_notes:
+        base_name = re.sub(r"-?\d+$", "", note_name)
+        canonical_map[NOTE_NAME_TO_PITCH_CLASS[base_name]] = base_name
+
+    if bass is not None:
+        canonical_map[NOTE_NAME_TO_PITCH_CLASS[bass]] = bass
+    elif root is not None:
+        canonical_map.setdefault(NOTE_NAME_TO_PITCH_CLASS[root], root)
+
+    normalized: list[str] = []
+    for note_name in played_notes:
+        midi_note = note_name_to_midi(note_name)
+        pitch_class = midi_note % 12
+        octave = (midi_note // 12) - 1
+        base_name = canonical_map.get(
+            pitch_class,
+            midi_to_note_name(midi_note, prefer_flats=prefer_flats)[:-1],
+        )
+        normalized.append(f"{base_name}{octave}")
+    return tuple(normalized)
+
+
+def _build_played_progression_score(steps: tuple[TrainerStep, ...], *, single_hand: bool):
+    score = stream.Score(id="live-played-progression")
+    if single_hand:
+        part = stream.Part(id="live-played-treble")
+        part.append(clef.TrebleClef())
+        part.append(key.KeySignature(0))
+        for step in steps:
+            part.append(_build_measure(label=step.symbol, pitches=step.display_notes))
+        score.insert(0, part)
+        return score
+
+    return _build_detected_progression_score(steps)
+
+
+def _export_detected_cards_svg(steps: tuple[TrainerStep, ...]) -> str:
+    columns = min(4, max(1, len(steps)))
+    rows = ceil(len(steps) / columns)
+    card_width = 360
+    card_height = 220
+    gap = 18
+    outer_width = columns * card_width + (columns + 1) * gap
+    outer_height = rows * card_height + (rows + 1) * gap
+
+    parts = [
+        (
+            f"<svg xmlns='http://www.w3.org/2000/svg' width='{outer_width}' "
+            f"height='{outer_height}' viewBox='0 0 {outer_width} {outer_height}'>"
+        ),
+        ("<rect x='0' y='0' width='100%' height='100%' fill='#f8fafc' rx='24' ry='24'/>"),
+    ]
+
+    for index, step in enumerate(steps):
+        row = index // columns
+        column = index % columns
+        card_x = gap + column * (card_width + gap)
+        card_y = gap + row * (card_height + gap)
+
+        parts.append(
+            f"<rect x='{card_x}' y='{card_y}' width='{card_width}' height='{card_height}' "
+            "rx='18' ry='18' fill='#ffffff' stroke='#cbd5e1' stroke-width='2'/>"
+        )
+        parts.append(
+            f"<text x='{card_x + card_width / 2}' y='{card_y + 28}' "
+            "text-anchor='middle' font-family='Arial, sans-serif' "
+            "font-size='18' font-weight='700' fill='#172554'>"
+            f"{escape(step.symbol)}</text>"
+        )
+
+        inner_svg = _render_score_markup(
+            _single_step_musicxml(step),
+            scale=22,
+            page_width=220,
+        )
+        if not inner_svg:
+            continue
+
+        inner_root = ET.fromstring(inner_svg)
+        inner_root.attrib["x"] = str(card_x + 24)
+        inner_root.attrib["y"] = str(card_y + 40)
+        inner_root.attrib["width"] = str(card_width - 48)
+        inner_root.attrib["height"] = str(card_height - 64)
+        parts.append(ET.tostring(inner_root, encoding="unicode"))
+
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 def _render_notation_error() -> str:
@@ -776,6 +1006,22 @@ def _render_score_svg(
     scale: int = 38,
     page_width: int = 1800,
 ) -> str:
+    svg = _render_score_markup(score_xml, scale=scale, page_width=page_width)
+    if not svg:
+        return (
+            f"<div class='{container_class}'>"
+            "<div class='trainer-error'>Verovio could not render this score.</div>"
+            "</div>"
+        )
+    return f"<div class='{container_class}'>{svg}</div>"
+
+
+def _render_score_markup(
+    score_xml: str,
+    *,
+    scale: int = 38,
+    page_width: int = 1800,
+) -> str:
     toolkit = verovio.toolkit(False)
     resource_path = Path(verovio.__file__).resolve().parent / "data"
     toolkit.setResourcePath(str(resource_path))
@@ -792,13 +1038,7 @@ def _render_score_svg(
             "breaks": "none",
         },
     )
-    if not svg:
-        return (
-            f"<div class='{container_class}'>"
-            "<div class='trainer-error'>Verovio could not render this score.</div>"
-            "</div>"
-        )
-    return f"<div class='{container_class}'>{svg}</div>"
+    return svg or ""
 
 
 def _voice_two_notes(

@@ -12,7 +12,10 @@ from harmony.trainer import (
     VISIBLE_MINOR_KEYS,
     build_visible_exercises,
     compare_note_sets,
+    display_chord_symbol,
+    export_live_chord_progression_svg,
     render_detected_voicing_gallery,
+    render_played_chord_gallery,
     render_progression_svg,
 )
 
@@ -24,6 +27,9 @@ __all__ = [
     "VISIBLE_MINOR_KEYS",
     "build_visible_exercises",
     "compare_note_sets",
+    "display_chord_symbol",
+    "export_live_chord_progression_svg",
     "render_detected_voicing_gallery",
+    "render_played_chord_gallery",
     "render_progression_svg",
 ]
