@@ -11,7 +11,27 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
+from app_files import (
+    clear_workspace,
+    read_text_file,
+    safe_filename,
+    save_bytes_to_file,
+    validate_extension,
+)
+from audio_analysis.chord_detection import (
+    get_chord_detection_backend,
+    list_chord_detection_backends,
+)
+from audio_analysis.inspection import (
+    benchmark_chord_detection,
+    compute_chord_label_agreement,
+    extract_wav_clip_bytes,
+    load_waveform_for_plot,
+    predict_chords_for_stem,
+    read_chords_lab,
+)
 from audio_analysis.separation import DEFAULT_MODEL, DEMUCS_MODELS
+from audio_analysis.workspace import list_stems_wav, read_stems, run_split, zip_stems
 from harmony.trainer import (
     VISIBLE_MAJOR_KEYS,
     VISIBLE_MINOR_KEYS,
@@ -23,25 +43,6 @@ from harmony.trainer import (
 from midi_io import query_midi_devices
 from midi_io.chord_detector import ChordDetector
 from midi_io.handler import MIDI_NOTE_TO_NAME
-from service import (
-    benchmark_chord_detection,
-    clear_workspace,
-    compute_chord_label_agreement,
-    extract_wav_clip_bytes,
-    get_chord_detection_backend,
-    list_chord_detection_backends,
-    list_stems_wav,
-    load_waveform_for_plot,
-    predict_chords_for_stem,
-    read_chords_lab,
-    read_stems,
-    read_text_file,
-    run_split,
-    safe_filename,
-    save_bytes_to_file,
-    validate_extension,
-    zip_stems,
-)
 
 APP_TITLE: str = "🎵 Music Workbench"
 

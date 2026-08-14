@@ -2,7 +2,7 @@ import argparse
 from pathlib import Path
 
 from audio_analysis.chord_detection import list_chord_detection_backends
-from service import benchmark_chord_detection
+from audio_analysis.inspection import benchmark_chord_detection
 
 
 def _build_parser() -> argparse.ArgumentParser:
