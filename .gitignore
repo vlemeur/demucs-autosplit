@@ -42,3 +42,5 @@ Thumbs.db
 # === Audio files ===
 *.wav
 *.mp3
+
+.streamlit_workdir

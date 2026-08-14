@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import base64
+import json
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 import plotly.graph_objects as go
 import streamlit as st
@@ -37,7 +39,10 @@ from harmony.trainer import (
     VISIBLE_MINOR_KEYS,
     build_visible_exercises,
     compare_note_sets,
+    display_chord_symbol,
+    export_live_chord_progression_svg,
     render_detected_voicing_gallery,
+    render_played_chord_gallery,
     render_progression_svg,
 )
 from midi_io import query_midi_devices
@@ -79,7 +84,10 @@ SESSION_KEY_LIVE_THREAD: str = "live_thread"
 SESSION_KEY_LIVE_STOP_EVENT: str = "live_stop_event"
 SESSION_KEY_LIVE_SNAPSHOT: str = "live_snapshot"
 SESSION_KEY_LIVE_ERROR: str = "live_error"
-SESSION_KEY_CHORD_SEQ: str = "chord_sequence"
+SESSION_KEY_LIVE_CHART: str = "live_chord_chart"
+SESSION_KEY_LIVE_CHART_NAME: str = "live_chord_chart_name"
+SESSION_KEY_LIVE_CHART_SINGLE_HAND: str = "live_chord_chart_single_hand"
+SESSION_KEY_LIVE_CHART_EXPORT_FORMAT: str = "live_chord_chart_export_format"
 SESSION_KEY_251_MODE: str = "trainer_251_mode"
 SESSION_KEY_251_KEY: str = "trainer_251_key"
 SESSION_KEY_251_VARIANT: str = "trainer_251_variant"
@@ -92,6 +100,7 @@ SESSION_KEY_251_CHAIN_INDEX: str = "trainer_251_chain_index"
 SESSION_KEY_MIDI_SELECTED_DEVICE: str = "live_selected_device"
 LIVE_REFRESH_INTERVAL_S: float = 0.2
 VISIBLE_251_EXERCISES = build_visible_exercises()
+LIVE_CHARTS_DIR: Path = WORK_DIR / "live_charts"
 
 
 @dataclass(frozen=True)
@@ -109,6 +118,12 @@ class ChordsPlotConfig:
 
     start_s: float
     end_s: float
+
+
+class LiveChartEntry(TypedDict):
+    label: str
+    display: str
+    notes: tuple[str, ...]
 
 
 def _collapse_chord_segments(segments: list) -> list:
@@ -1075,8 +1090,14 @@ def _init_live_harmony_state() -> None:
         st.session_state[SESSION_KEY_LIVE_SNAPSHOT] = LiveHarmonySnapshot()
     if SESSION_KEY_LIVE_ERROR not in st.session_state:
         st.session_state[SESSION_KEY_LIVE_ERROR] = None
-    if SESSION_KEY_CHORD_SEQ not in st.session_state:
-        st.session_state[SESSION_KEY_CHORD_SEQ] = []
+    if SESSION_KEY_LIVE_CHART not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_CHART] = []
+    if SESSION_KEY_LIVE_CHART_NAME not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_CHART_NAME] = ""
+    if SESSION_KEY_LIVE_CHART_SINGLE_HAND not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_CHART_SINGLE_HAND] = False
+    if SESSION_KEY_LIVE_CHART_EXPORT_FORMAT not in st.session_state:
+        st.session_state[SESSION_KEY_LIVE_CHART_EXPORT_FORMAT] = "Text"
     if SESSION_KEY_251_MODE not in st.session_state:
         st.session_state[SESSION_KEY_251_MODE] = "major"
     if SESSION_KEY_251_KEY not in st.session_state:
@@ -1421,7 +1442,11 @@ def _render_live_harmony_tab() -> None:
                     st.markdown(f"- {alt}")
 
             st.markdown("---")
-            _render_chord_sequence_editor()
+            _render_live_chord_chart(
+                current_notes=current_notes,
+                current_chord=current_chord,
+                current_alts=current_alts,
+            )
 
     with trainer_tab:
         st.subheader("🎼 Jazz Trainer")
@@ -1621,63 +1646,176 @@ def _sync_251_chain_state(*, key_options: list[str], fallback_key: str) -> None:
         st.session_state[SESSION_KEY_251_CHAIN_INDEX] = max_index
 
 
-def _render_chord_sequence_editor() -> None:
-    """
-    Render the chord sequence editor section.
+def _serialize_live_chart(chart_entries: list[LiveChartEntry]) -> str:
+    """Build a compact text representation of the captured chord chart."""
+    return "\n".join(
+        f"{index + 1}. {display_chord_symbol(str(entry['label']))}: "
+        f"{', '.join(str(note) for note in entry['notes'])}"
+        for index, entry in enumerate(chart_entries)
+    )
 
-    Returns
-    -------
-    None
-    """
-    st.subheader("📝 Chord Sequence Editor")
-    st.markdown("Create and save chord progressions for practice or reference.")
 
-    # Get or initialize chord sequence
-    if SESSION_KEY_CHORD_SEQ not in st.session_state:
-        st.session_state[SESSION_KEY_CHORD_SEQ] = []
+def _save_live_chart(chart_name: str, chart_entries: list[LiveChartEntry]) -> Path:
+    """Persist the captured chart as JSON in the app workspace."""
+    LIVE_CHARTS_DIR.mkdir(parents=True, exist_ok=True)
+    safe_name = safe_filename(chart_name).replace(" ", "_") or "live_chord_chart"
+    output_path = LIVE_CHARTS_DIR / f"{safe_name}.json"
+    payload = {
+        "title": chart_name,
+        "chords": chart_entries,
+    }
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return output_path
 
-    sequence = st.session_state[SESSION_KEY_CHORD_SEQ]
 
-    # Controls
-    col1, col2, col3 = st.columns([3, 1, 1])
+def _render_live_chord_chart(
+    *,
+    current_notes: list[str],
+    current_chord: str | None,
+    current_alts: list[str],
+) -> None:
+    """Capture live-played chords into a reusable chart."""
+    st.subheader("Chord Chart")
+    st.caption("Capture the chords you actually play, review them on staff, and save the chart.")
 
-    with col1:
-        # Chord input
-        all_possible_chords = [
-            f"{note}:{chord_type}"
-            for note in ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-            for chord_type in ["maj", "min", "7", "maj7", "min7", "sus2", "sus4", "dim", "aug"]
-        ]
-        new_chord = st.selectbox(
-            "Add Chord",
-            ["""""" + chord for chord in all_possible_chords],
-            index=0,
-            help="Select a chord to add to the sequence",
+    current_symbol = display_chord_symbol(current_chord) if current_chord else "No chord"
+    single_hand = bool(st.session_state.get(SESSION_KEY_LIVE_CHART_SINGLE_HAND, False))
+    preview_col, action_col = st.columns([2, 1])
+
+    with preview_col:
+        st.toggle(
+            "Single hand notation",
+            key=SESSION_KEY_LIVE_CHART_SINGLE_HAND,
+            help="Display captured voicings on one staff instead of split across both hands.",
+        )
+        if current_notes and current_chord:
+            st.markdown(f"**Live capture:** `{current_symbol}`")
+            st.markdown(
+                render_played_chord_gallery(
+                    [(current_chord, tuple(current_notes))],
+                    single_hand=single_hand,
+                ),
+                unsafe_allow_html=True,
+            )
+        elif current_notes:
+            st.warning("Notes are detected, but the current voicing is still ambiguous.")
+        else:
+            st.info("Play a chord on your MIDI keyboard to preview it here.")
+
+    with action_col:
+        st.text_input(
+            "Chart name",
+            key=SESSION_KEY_LIVE_CHART_NAME,
+            placeholder="Autumn Leaves A section",
+        )
+        if st.button(
+            "Add current chord",
+            width="stretch",
+            disabled=not (current_chord and current_notes),
+            key="live_chart_add_current",
+        ):
+            if current_chord is None:
+                st.rerun()
+            chart_entries: list[LiveChartEntry] = list(
+                st.session_state.get(SESSION_KEY_LIVE_CHART, [])
+            )
+            chart_entries.append(
+                {
+                    "label": current_chord,
+                    "display": current_symbol,
+                    "notes": tuple(current_notes),
+                }
+            )
+            st.session_state[SESSION_KEY_LIVE_CHART] = chart_entries
+            st.rerun()
+
+        if st.button(
+            "Undo last",
+            width="stretch",
+            disabled=not st.session_state.get(SESSION_KEY_LIVE_CHART),
+            key="live_chart_undo_last",
+        ):
+            chart_entries: list[LiveChartEntry] = list(
+                st.session_state.get(SESSION_KEY_LIVE_CHART, [])
+            )
+            chart_entries.pop()
+            st.session_state[SESSION_KEY_LIVE_CHART] = chart_entries
+            st.rerun()
+
+        if st.button(
+            "Clear chart",
+            width="stretch",
+            disabled=not st.session_state.get(SESSION_KEY_LIVE_CHART),
+            key="live_chart_clear",
+        ):
+            st.session_state[SESSION_KEY_LIVE_CHART] = []
+            st.rerun()
+
+    if current_alts and current_chord:
+        st.caption(
+            "Alternative spellings: "
+            + ", ".join(display_chord_symbol(chord_label) for chord_label in current_alts[:4])
         )
 
-    with col2:
-        if st.button("➕ Add", width="stretch"):
-            if new_chord:
-                sequence.append(new_chord)
-                st.session_state[SESSION_KEY_CHORD_SEQ] = sequence
+    chart_entries: list[LiveChartEntry] = list(st.session_state.get(SESSION_KEY_LIVE_CHART, []))
+    if not chart_entries:
+        st.info("No saved chords yet. Add live detections to build your chart.")
+        return
 
-    with col3:
-        if st.button("🗑️ Clear", width="stretch"):
-            st.session_state[SESSION_KEY_CHORD_SEQ] = []
+    st.markdown("**Captured progression**")
+    st.write(" | ".join(str(entry["display"]) for entry in chart_entries))
 
-    # Display sequence
-    if sequence:
-        st.markdown("**Current Sequence:**")
-        cols = st.columns(min(len(sequence), 6))
-        for idx, chord in enumerate(sequence):
-            with cols[idx % 6]:
-                if st.button(f"{chord} ❌", key=f"chord_{idx}", width="stretch"):
-                    # Remove this chord
-                    sequence.pop(idx)
-                    st.session_state[SESSION_KEY_CHORD_SEQ] = sequence
-                    st.rerun()
+    notation_entries = [
+        (
+            str(entry["label"]),
+            tuple(str(note) for note in entry["notes"]),
+        )
+        for entry in chart_entries
+    ]
+    st.markdown(
+        render_played_chord_gallery(notation_entries, single_hand=single_hand),
+        unsafe_allow_html=True,
+    )
+
+    chart_name = st.session_state.get(SESSION_KEY_LIVE_CHART_NAME, "").strip() or "Live chord chart"
+    chart_text = _serialize_live_chart(chart_entries)
+    output_path = _save_live_chart(chart_name, chart_entries)
+    st.caption(f"Auto-saved to `{output_path}`")
+
+    export_format = st.selectbox(
+        "Export format",
+        options=["Text", "SVG image"],
+        key=SESSION_KEY_LIVE_CHART_EXPORT_FORMAT,
+    )
+    safe_chart_name = safe_filename(chart_name).replace(" ", "_") or "live_chord_chart"
+    download_data: str
+    download_file_name: str
+    download_mime: str
+
+    if export_format == "SVG image":
+        chart_svg = export_live_chord_progression_svg(
+            notation_entries,
+            single_hand=single_hand,
+        )
+        if not chart_svg:
+            st.warning("SVG export is not available for the current chart.")
+            return
+        download_data = chart_svg
+        download_file_name = f"{safe_chart_name}.svg"
+        download_mime = "image/svg+xml"
     else:
-        st.info("No chords in sequence yet. Add some using the controls above!")
+        download_data = chart_text
+        download_file_name = f"{safe_chart_name}.txt"
+        download_mime = "text/plain"
+
+    st.download_button(
+        "Download",
+        data=download_data,
+        file_name=download_file_name,
+        mime=download_mime,
+        width="stretch",
+        key="live_chart_download",
+    )
 
 
 def main() -> None:
