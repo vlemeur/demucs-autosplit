@@ -1101,6 +1101,7 @@ def _render_live_harmony_tab() -> None:
                 """
             )
         else:
+            resolved_selected_device = selected_device_name or devices[0]
             with st.expander("MIDI diagnostics", expanded=False):
                 st.code(
                     "\n".join(
@@ -1118,7 +1119,7 @@ def _render_live_harmony_tab() -> None:
                 selected_device = st.selectbox(
                     "Select MIDI Input Device",
                     devices,
-                    index=devices.index(selected_device_name),
+                    index=devices.index(resolved_selected_device),
                     key=SESSION_KEY_MIDI_SELECTED_DEVICE,
                     help="Choose your MIDI keyboard or controller",
                 )
