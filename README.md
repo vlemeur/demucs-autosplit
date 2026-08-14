@@ -55,6 +55,12 @@ This project uses `demucs-infer` as the maintained inference backend for stem
 separation. The app uses its in-process Python API and writes WAV stems with
 `soundfile`.
 
+`uv sync` also installs the Python dependencies needed by the optional
+`ChordMini` chord-recognition backends. The first time you run one of those
+backends from the app or CLI, Music Workbench will auto-download the ChordMini
+repository into `.cache/chordmini/` unless you point `CHORDMINI_DIR` to an
+existing local checkout.
+
 
 ### 3. (Optional) Enable prek hooks
 
@@ -146,7 +152,6 @@ If several MIDI inputs are available, the script selects the first one by defaul
 * Output files are stored in a local workspace directory (`.streamlit_workdir/`).
 * NumPy is pinned to `<2` for compatibility with PyTorch / torchaudio.
 * For portability, the project pins `torchaudio` below `2.9` on non-Intel platforms.
-* The product/repository name is `Music Workbench`; the internal package name `demucs_audiosplit` is still used in the codebase for compatibility.
 
 ---
 

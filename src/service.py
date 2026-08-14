@@ -10,8 +10,12 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from demucs_audiosplit.audiosplit import run_demucs
-from demucs_audiosplit.chords_predict import predict_chords_from_wave
+from audio_analysis.chord_detection import (
+    ChordBenchmarkResult,
+    predict_chords_from_wave,
+    run_chord_benchmark,
+)
+from audio_analysis.separation import run_demucs
 
 
 def extract_wav_clip_bytes(
@@ -127,7 +131,7 @@ def read_chords_lab(lab_path: Path) -> list[ChordSegment]:
         if not line:
             continue
 
-        parts = line.split(maxsplit=2)
+        parts = line.split()
         if len(parts) < 3:
             raise ValueError(f"Invalid .lab line: {raw_line}")
 
@@ -481,7 +485,11 @@ def list_stems_wav(stems_dir: Path, stems: list[str]) -> dict[str, Path]:
     return existing
 
 
-def predict_chords_for_stem(input_wav: Path, output_lab: Path) -> Path:
+def predict_chords_for_stem(
+    input_wav: Path,
+    output_lab: Path,
+    backend_id: str = "madmom",
+) -> Path:
     """
     Predict chords from a wav file and write a .lab output.
 
@@ -506,8 +514,70 @@ def predict_chords_for_stem(input_wav: Path, output_lab: Path) -> Path:
         raise FileNotFoundError(f"Stem wav not found: {input_wav}")
 
     output_lab.parent.mkdir(parents=True, exist_ok=True)
-    predict_chords_from_wave(input_wav, output_lab)
+    bass_wav = input_wav.parent / "bass.wav"
+    if bass_wav.resolve() == input_wav.resolve() or not bass_wav.exists():
+        bass_wav = None
+    predict_chords_from_wave(input_wav, output_lab, method=backend_id, bass_wav=bass_wav)
     return output_lab
+
+
+def benchmark_chord_detection(
+    input_wav: Path,
+    output_dir: Path,
+    backend_ids: list[str],
+) -> list[ChordBenchmarkResult]:
+    """Run the configured chord backends on one audio file."""
+    if not input_wav.exists():
+        raise FileNotFoundError(f"Stem wav not found: {input_wav}")
+    return run_chord_benchmark(input_wav=input_wav, output_dir=output_dir, backend_ids=backend_ids)
+
+
+def compute_chord_label_agreement(
+    first_segments: list[ChordSegment],
+    second_segments: list[ChordSegment],
+    *,
+    step_s: float = 0.1,
+) -> float | None:
+    """
+    Compute a simple exact-label agreement between two chord timelines.
+
+    This is a lightweight comparison helper for backend benchmarking, not a
+    replacement for mir_eval / MIREX metrics.
+    """
+    if not first_segments or not second_segments:
+        return None
+    if step_s <= 0:
+        raise ValueError("step_s must be > 0")
+
+    max_time = min(first_segments[-1].end_s, second_segments[-1].end_s)
+    if max_time <= 0:
+        return None
+
+    matches = 0
+    total = 0
+    time_s = 0.0
+    first_index = 0
+    second_index = 0
+
+    while time_s < max_time:
+        while first_index + 1 < len(first_segments) and first_segments[first_index].end_s <= time_s:
+            first_index += 1
+        while (
+            second_index + 1 < len(second_segments)
+            and second_segments[second_index].end_s <= time_s
+        ):
+            second_index += 1
+
+        first_label = first_segments[first_index].label
+        second_label = second_segments[second_index].label
+        if first_label == second_label:
+            matches += 1
+        total += 1
+        time_s += step_s
+
+    if total == 0:
+        return None
+    return matches / total
 
 
 def read_text_file(path: Path) -> str:

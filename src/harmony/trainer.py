@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from html import escape
 from pathlib import Path
 
 import verovio
-from music21 import chord, clef, key, layout, meter, musicxml, note, stream
+from music21 import chord, clef, expressions, key, layout, meter, musicxml, note, stream
 
 NOTATION_BACKEND_AVAILABLE = True
 NOTATION_BACKEND_ERROR = ""
@@ -525,6 +526,48 @@ def render_progression_svg(
     )
 
 
+def render_detected_voicing_gallery(
+    chord_labels: list[str] | tuple[str, ...],
+    *,
+    single_hand: bool = False,
+) -> str:
+    """Render a gallery of detected chord voicings for keyboard."""
+    if not NOTATION_BACKEND_AVAILABLE:
+        return _render_notation_error()
+
+    steps = tuple(
+        _detected_step_from_label(label, single_hand=single_hand) for label in chord_labels
+    )
+    if not steps:
+        return (
+            "<div class='trainer-wrap'>"
+            f"{_trainer_style_block()}"
+            "<div class='trainer-error'>No chord symbols available for notation.</div>"
+            "</div>"
+        )
+
+    cards = "".join(
+        (
+            "<div class='detected-voicing-card'>"
+            f"<div class='detected-voicing-label'>{escape(step.symbol)}</div>"
+            f"{_render_score_svg(
+                _single_step_musicxml(step),
+                'trainer-score trainer-score--detected',
+                scale=26,
+                page_width=220,
+            )}"
+            "</div>"
+        )
+        for step in steps
+    )
+    return (
+        "<div class='trainer-wrap'>"
+        f"{_trainer_style_block()}"
+        f"<div class='detected-voicing-grid'>{cards}</div>"
+        "</div>"
+    )
+
+
 def _render_notation_error() -> str:
     return (
         "<div class='trainer-wrap'>"
@@ -542,6 +585,12 @@ def _render_step_legend(*, exercise: TrainerExercise, active_step: int) -> str:
         class_name = "trainer-step trainer-step--active" if index == active_step else "trainer-step"
         items.append(f"<div class='{class_name}'>{escape(step.symbol)}</div>")
     return "<div class='trainer-steps'>" + "".join(items) + "</div>"
+
+
+@lru_cache(maxsize=128)
+def _detected_progression_musicxml(steps: tuple[TrainerStep, ...]) -> str:
+    score = _build_detected_progression_score(steps)
+    return musicxml.m21ToXml.GeneralObjectExporter(score).parse().decode("utf-8")
 
 
 @lru_cache(maxsize=128)
@@ -620,11 +669,39 @@ def _build_single_step_score(step: TrainerStep, *, key_signature_sharps: int):
         )
         return score
 
+    if step.staff == "treble":
+        part = stream.Part(id="played-treble")
+        part.append(clef.TrebleClef())
+        part.append(key.KeySignature(key_signature_sharps))
+        part.append(_build_measure(label=None, pitches=step.display_notes))
+        score.insert(0, part)
+        return score
+
     part = stream.Part(id="played-bass")
     part.append(clef.BassClef())
     part.append(key.KeySignature(key_signature_sharps))
     part.append(_build_measure(label=None, pitches=step.display_notes))
     score.insert(0, part)
+    return score
+
+
+def _build_detected_progression_score(steps: tuple[TrainerStep, ...]):
+    score = stream.Score(id="detected-progression")
+    upper_part = stream.Part(id="detected-upper")
+    lower_part = stream.Part(id="detected-lower")
+
+    upper_part.append(clef.TrebleClef())
+    lower_part.append(clef.BassClef())
+    upper_part.append(key.KeySignature(0))
+    lower_part.append(key.KeySignature(0))
+
+    for step in steps:
+        upper_part.append(_build_measure(label=step.symbol, pitches=step.upper_notes))
+        lower_part.append(_build_measure(label=None, pitches=step.lower_notes))
+
+    score.insert(0, upper_part)
+    score.insert(0, lower_part)
+    score.insert(0, layout.StaffGroup([upper_part, lower_part], symbol="brace", barTogether=True))
     return score
 
 
@@ -678,6 +755,8 @@ def _build_measure(*, label: str | None, pitches: tuple[str, ...]):
     time_signature = meter.TimeSignature("4/4")
     time_signature.style.hideObjectOnPrint = True
     measure.insert(0, time_signature)
+    if label:
+        measure.insert(0, expressions.TextExpression(label))
 
     if not pitches:
         measure.append(note.Rest(quarterLength=4))
@@ -690,7 +769,13 @@ def _build_measure(*, label: str | None, pitches: tuple[str, ...]):
     return measure
 
 
-def _render_score_svg(*, score_xml: str, container_class: str) -> str:
+def _render_score_svg(
+    score_xml: str,
+    container_class: str,
+    *,
+    scale: int = 38,
+    page_width: int = 1800,
+) -> str:
     toolkit = verovio.toolkit(False)
     resource_path = Path(verovio.__file__).resolve().parent / "data"
     toolkit.setResourcePath(str(resource_path))
@@ -698,8 +783,8 @@ def _render_score_svg(*, score_xml: str, container_class: str) -> str:
         score_xml,
         {
             "inputFrom": "xml",
-            "pageWidth": 1800,
-            "scale": 38,
+            "pageWidth": page_width,
+            "scale": scale,
             "svgViewBox": True,
             "adjustPageHeight": True,
             "header": "none",
@@ -775,13 +860,173 @@ def _note_name(pitch_class: int, *, prefer_flats: bool) -> str:
     return note_names[pitch_class % 12]
 
 
+def _detected_step_from_label(label: str, *, single_hand: bool = False) -> TrainerStep:
+    root, quality, bass = _parse_detected_chord_label(label)
+    symbol = _display_chord_symbol(label)
+    if root is None:
+        return TrainerStep(
+            symbol=symbol,
+            expected_notes=(),
+            display_notes=(),
+            lower_notes=(),
+            upper_notes=(),
+            staff="grand",
+        )
+
+    prefer_flats = "b" in root or (bass is not None and "b" in bass)
+    root_pc = NOTE_NAME_TO_PITCH_CLASS[root]
+    bass_pc = NOTE_NAME_TO_PITCH_CLASS[bass] if bass else root_pc
+    upper_pitch_classes = _quality_to_pitch_classes(root_pc, quality)
+
+    if single_hand:
+        single_hand_pitch_classes = [bass_pc]
+        for pitch_class in (root_pc,) + upper_pitch_classes:
+            if pitch_class not in single_hand_pitch_classes:
+                single_hand_pitch_classes.append(pitch_class)
+        display_notes = tuple(
+            midi_to_note_name(
+                _nearest_midi_for_pitch_class(pitch_class, target=target),
+                prefer_flats=prefer_flats,
+            )
+            for pitch_class, target in zip(
+                single_hand_pitch_classes, (65, 69, 72, 74, 77), strict=False
+            )
+        )
+        return TrainerStep(
+            symbol=symbol,
+            expected_notes=display_notes,
+            display_notes=display_notes,
+            lower_notes=(),
+            upper_notes=(),
+            staff="treble",
+        )
+
+    lower_note = _root_note(bass_pc, prefer_flats=prefer_flats, target=48)
+    upper_notes = tuple(
+        midi_to_note_name(
+            _nearest_midi_for_pitch_class(pitch_class, target=target),
+            prefer_flats=prefer_flats,
+        )
+        for pitch_class, target in zip(
+            upper_pitch_classes,
+            (60, 64, 67, 71),
+            strict=False,
+        )
+    )
+
+    display_notes = (lower_note,) + upper_notes
+    return TrainerStep(
+        symbol=symbol,
+        expected_notes=display_notes,
+        display_notes=display_notes,
+        lower_notes=(lower_note,),
+        upper_notes=upper_notes,
+        staff="grand",
+    )
+
+
+def _parse_detected_chord_label(label: str) -> tuple[str | None, str, str | None]:
+    normalized = label.strip()
+    if normalized in {"", "N", "X"}:
+        return None, "", None
+
+    slash_bass = None
+    if "/" in normalized:
+        normalized, slash_bass = normalized.split("/", 1)
+        slash_bass = slash_bass.strip() or None
+
+    match = re.match(r"^([A-G](?:#|b)?)(?::?(.*))?$", normalized)
+    if not match:
+        return None, "", None
+
+    root = match.group(1)
+    quality = (match.group(2) or "maj").strip()
+    quality = quality or "maj"
+    return root, quality, slash_bass
+
+
+def _display_chord_symbol(label: str) -> str:
+    root, quality, bass = _parse_detected_chord_label(label)
+    if root is None:
+        return "N.C."
+
+    symbol = root
+    normalized = quality.lower().replace(":", "")
+    if normalized in {"maj", ""}:
+        symbol = root
+    elif normalized in {"min", "m"}:
+        symbol = f"{root}m"
+    elif normalized in {"min7", "m7"}:
+        symbol = f"{root}m7"
+    elif normalized in {"maj7", "ma7", "m7+"}:
+        symbol = f"{root}maj7"
+    elif normalized == "7":
+        symbol = f"{root}7"
+    elif normalized in {"dim", "o"}:
+        symbol = f"{root}dim"
+    elif normalized in {"dim7", "o7"}:
+        symbol = f"{root}dim7"
+    elif normalized in {"hdim7", "m7b5"}:
+        symbol = f"{root}m7b5"
+    elif normalized in {"aug", "+"}:
+        symbol = f"{root}aug"
+    elif normalized.startswith("sus"):
+        symbol = f"{root}{normalized}"
+    else:
+        symbol = f"{root}{quality}"
+
+    if bass:
+        return f"{symbol}/{bass}"
+    return symbol
+
+
+def _quality_to_pitch_classes(root_pitch_class: int, quality: str) -> tuple[int, ...]:
+    normalized = quality.lower().replace(":", "")
+    intervals: tuple[int, ...]
+
+    if normalized in {"maj", ""}:
+        intervals = (4, 7)
+    elif normalized in {"min", "m"}:
+        intervals = (3, 7)
+    elif normalized in {"maj7", "ma7", "m7+"}:
+        intervals = (4, 7, 11)
+    elif normalized in {"min7", "m7"}:
+        intervals = (3, 7, 10)
+    elif normalized == "7":
+        intervals = (4, 7, 10)
+    elif normalized in {"dim", "o"}:
+        intervals = (3, 6)
+    elif normalized in {"dim7", "o7"}:
+        intervals = (3, 6, 9)
+    elif normalized in {"hdim7", "m7b5"}:
+        intervals = (3, 6, 10)
+    elif normalized in {"aug", "+"}:
+        intervals = (4, 8)
+    elif normalized == "6":
+        intervals = (4, 7, 9)
+    elif normalized in {"min6", "m6"}:
+        intervals = (3, 7, 9)
+    elif normalized.startswith("sus2"):
+        intervals = (2, 7, 10) if "7" in normalized else (2, 7)
+    elif normalized.startswith("sus"):
+        intervals = (5, 7, 10) if "7" in normalized else (5, 7)
+    elif "maj9" in normalized or "9" in normalized or "13" in normalized:
+        intervals = (4, 7, 10)
+    elif "min9" in normalized or "m9" in normalized:
+        intervals = (3, 7, 10)
+    else:
+        intervals = (4, 7)
+
+    return tuple((root_pitch_class + interval) % 12 for interval in intervals)
+
+
 def _trainer_style_block() -> str:
     return """
     <style>
     .trainer-wrap {
         border: 1px solid rgba(148, 163, 184, 0.35);
         border-radius: 16px;
-        padding: 1rem 1rem 0.6rem 1rem;
+        padding: 0.65rem;
         background: linear-gradient(180deg, rgba(248,250,252,0.95), rgba(241,245,249,0.92));
     }
     .trainer-title {
@@ -831,6 +1076,10 @@ def _trainer_style_block() -> str:
         height: auto;
         display: block;
     }
+    .trainer-score--detected {
+        padding: 0.1rem;
+        border-radius: 10px;
+    }
     .trainer-subtitle {
         font-size: 0.82rem;
         font-weight: 700;
@@ -838,6 +1087,30 @@ def _trainer_style_block() -> str:
         margin: 0 0 0.35rem 0.15rem;
         text-transform: uppercase;
         letter-spacing: 0.04em;
+    }
+    .detected-voicing-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+        gap: 0.4rem;
+    }
+    .detected-voicing-card {
+        background: rgba(255, 255, 255, 0.82);
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        border-radius: 10px;
+        padding: 0.28rem;
+    }
+    .detected-voicing-label {
+        font-size: 0.72rem;
+        font-weight: 700;
+        color: #0f172a;
+        margin: 0 0 0.08rem 0;
+        text-align: center;
+        line-height: 1.1;
+    }
+    .trainer-score--detected svg {
+        max-height: 88px;
+        width: 100%;
+        height: auto;
     }
     .trainer-error {
         color: #991b1b;

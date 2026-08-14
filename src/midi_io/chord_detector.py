@@ -13,10 +13,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from demucs_audiosplit.chords_library import detect_chord_from_notes, detect_chords_from_notes
+from harmony.chord_library import detect_chord_from_notes, detect_chords_from_notes
 
 if TYPE_CHECKING:
-    from midi.handler import MIDIHandler
+    from midi_io.handler import MIDIHandler
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ class ChordDetector:
         # Calculate confidence (ratio of chord notes found in input)
         confidence = 0.0
         if primary_chord:
-            from demucs_audiosplit.chords_library import get_chord_notes
+            from harmony.chord_library import get_chord_notes
 
             chord_notes = get_chord_notes(primary_chord)
             if chord_notes:

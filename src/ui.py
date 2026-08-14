@@ -9,20 +9,25 @@ from pathlib import Path
 import plotly.graph_objects as go
 import streamlit as st
 
-from demucs_audiosplit.audiosplit import DEFAULT_MODEL, DEMUCS_MODELS
-from midi import query_midi_devices
-from midi.chord_detector import ChordDetector
-from midi.handler import MIDI_NOTE_TO_NAME
-from midi.trainer import (
+from audio_analysis.separation import DEFAULT_MODEL, DEMUCS_MODELS
+from harmony.trainer import (
     VISIBLE_MAJOR_KEYS,
     VISIBLE_MINOR_KEYS,
     build_visible_exercises,
     compare_note_sets,
+    render_detected_voicing_gallery,
     render_progression_svg,
 )
+from midi_io import query_midi_devices
+from midi_io.chord_detector import ChordDetector
+from midi_io.handler import MIDI_NOTE_TO_NAME
 from service import (
+    benchmark_chord_detection,
     clear_workspace,
+    compute_chord_label_agreement,
     extract_wav_clip_bytes,
+    get_chord_detection_backend,
+    list_chord_detection_backends,
     list_stems_wav,
     load_waveform_for_plot,
     predict_chords_for_stem,
@@ -59,6 +64,9 @@ SESSION_KEY_ZOOM_START_S: str = "zoom_start_s"
 SESSION_KEY_ZOOM_END_S: str = "zoom_end_s"
 SESSION_KEY_SELECTED_MODEL: str = "selected_model"
 SESSION_KEY_ACTIVE_WORKSPACE: str = "active_workspace"
+SESSION_KEY_CHORD_BACKEND: str = "chord_backend"
+SESSION_KEY_CHORD_BENCHMARK: str = "chord_benchmark"
+SESSION_KEY_CHORD_SINGLE_HAND: str = "chord_single_hand"
 
 # Live Harmony session state keys
 SESSION_KEY_LIVE_NOTES: str = "live_notes"
@@ -100,6 +108,54 @@ class ChordsPlotConfig:
 
     start_s: float
     end_s: float
+
+
+def _collapse_chord_segments(segments: list) -> list:
+    """Filter out non-chords and keep unique chord labels in first-seen order."""
+    collapsed: list = []
+    seen_labels: set[str] = set()
+
+    for segment in segments:
+        normalized_label = segment.label.strip()
+        if normalized_label in {"", "N", "N.C.", "NC", "X"}:
+            continue
+        if normalized_label in seen_labels:
+            continue
+        seen_labels.add(normalized_label)
+        collapsed.append(segment)
+
+    return collapsed
+
+
+def _segments_in_time_range(segments: list, start_s: float, end_s: float) -> list:
+    """Return only the chord segments that overlap the requested time range."""
+    return [
+        segment for segment in segments if not (segment.end_s < start_s or segment.start_s > end_s)
+    ]
+
+
+def _render_detected_chord_chart(segments: list) -> None:
+    """Render detected chord voicings without time-based text clutter."""
+    condensed = _collapse_chord_segments(segments)
+    if not condensed:
+        return
+
+    st.subheader("Chord chart")
+    single_hand = st.toggle(
+        "Single-hand voicings",
+        key=SESSION_KEY_CHORD_SINGLE_HAND,
+        help="Switch between one-hand and split two-hand keyboard voicings.",
+    )
+
+    notation_labels = [segment.label for segment in condensed[:24]]
+    st.markdown(
+        render_detected_voicing_gallery(notation_labels, single_hand=bool(single_hand)),
+        unsafe_allow_html=True,
+    )
+    if len(condensed) > 24:
+        st.caption(
+            "The voicing gallery shows the first 24 harmonic events to keep the layout readable."
+        )
 
 
 @dataclass
@@ -175,16 +231,20 @@ def _init_session_state() -> None:
         st.session_state[SESSION_KEY_ACTIVE_WORKSPACE] = "Audio Analysis"
     elif st.session_state[SESSION_KEY_ACTIVE_WORKSPACE] == "Analyse audio":
         st.session_state[SESSION_KEY_ACTIVE_WORKSPACE] = "Audio Analysis"
+    if SESSION_KEY_CHORD_BACKEND not in st.session_state:
+        st.session_state[SESSION_KEY_CHORD_BACKEND] = "chordmini_chordnet"
+    if SESSION_KEY_CHORD_BENCHMARK not in st.session_state:
+        st.session_state[SESSION_KEY_CHORD_BENCHMARK] = None
 
 
-def _render_sidebar() -> tuple[str, str]:
+def _render_sidebar() -> tuple[str, str, str]:
     """
     Render the sidebar controls.
 
     Returns
     -------
-    tuple[str, str]
-        The selected model and active workspace.
+    tuple[str, str, str]
+        The selected model, active workspace, and chord backend.
     """
     with st.sidebar:
         st.header("Navigation")
@@ -203,6 +263,16 @@ def _render_sidebar() -> tuple[str, str]:
         st.markdown("---")
 
         selected_model = st.session_state.get(SESSION_KEY_SELECTED_MODEL, DEFAULT_MODEL)
+        selected_backend = st.session_state.get(SESSION_KEY_CHORD_BACKEND, "chordmini_chordnet")
+
+        if selected_model not in DEMUCS_MODELS:
+            selected_model = DEFAULT_MODEL
+            st.session_state[SESSION_KEY_SELECTED_MODEL] = selected_model
+
+        backend_ids = [backend.backend_id for backend in list_chord_detection_backends()]
+        if selected_backend not in backend_ids:
+            selected_backend = "chordmini_chordnet"
+            st.session_state[SESSION_KEY_CHORD_BACKEND] = selected_backend
 
         if active_workspace == "Audio Analysis":
             st.header("Settings")
@@ -215,12 +285,20 @@ def _render_sidebar() -> tuple[str, str]:
             selected_model = st.selectbox(
                 "Demucs Model",
                 options=DEMUCS_MODELS,
-                index=DEMUCS_MODELS.index(selected_model),
                 key=SESSION_KEY_SELECTED_MODEL,
                 help="\n".join(
                     f"**{m}**: {model_tooltip.get(m, 'No description')}" for m in DEMUCS_MODELS
                 ),
             )
+
+            selected_backend = st.selectbox(
+                "Chord Backend",
+                options=backend_ids,
+                key=SESSION_KEY_CHORD_BACKEND,
+                format_func=lambda backend_id: get_chord_detection_backend(backend_id).label,
+                help="Select the chord-recognition backend used in the Chord Detection tab.",
+            )
+            st.caption(get_chord_detection_backend(selected_backend).description)
 
             st.markdown("---")
 
@@ -231,7 +309,7 @@ def _render_sidebar() -> tuple[str, str]:
             st.session_state[SESSION_KEY_CLIP_LABEL] = None
             st.success("Workspace cleared.")
 
-    return selected_model, active_workspace
+    return selected_model, active_workspace, selected_backend
 
 
 def _simplify_chord_label(label: str) -> str:
@@ -308,12 +386,13 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
         "#FECB52",
     ]
 
-    simplified_labels = sorted({_simplify_chord_label(seg.label) for seg in segments})
+    visible_segments = _segments_in_time_range(segments, config.start_s, config.end_s)
+    simplified_labels = sorted({seg.label for seg in visible_segments})
     label_to_color: dict[str, str] = {
         chord_label: palette[i % len(palette)] for i, chord_label in enumerate(simplified_labels)
     }
 
-    # Dummy traces to build a clean legend (simplified labels only).
+    # Dummy traces to build a clean legend.
     for chord_label in simplified_labels:
         fig.add_trace(
             go.Scatter(
@@ -328,12 +407,8 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
         )
 
     # Regions + invisible markers for hover details.
-    for seg in segments:
-        if seg.end_s < config.start_s or seg.start_s > config.end_s:
-            continue
-
-        simplified = _simplify_chord_label(seg.label)
-        color = label_to_color.get(simplified, "#999999")
+    for seg in visible_segments:
+        color = label_to_color.get(seg.label, "#999999")
 
         fig.add_vrect(
             x0=seg.start_s,
@@ -353,7 +428,6 @@ def _build_chords_waveform_figure(times_s, mono, segments, config: ChordsPlotCon
                 marker={"size": 6, "opacity": 0.0},
                 hovertemplate=(
                     f"Chord: <b>{seg.label}</b><br>"
-                    f"Simplified: <b>{simplified}</b><br>"
                     f"{seg.start_s:.2f}s → {seg.end_s:.2f}s"
                     "<extra></extra>"
                 ),
@@ -395,6 +469,42 @@ def _render_split_tab(model: str) -> None:
     stems = MODEL_STEMS.get(model, ["drums", "bass", "other", "vocals"])
     num_stems = len(stems)
     st.caption(f"Upload a track and get {num_stems} stems: {', '.join(stems)}.")
+
+    stored_stems_dir = _get_stems_dir()
+    if stored_stems_dir is not None:
+        stored_stems = list_stems_wav(stems_dir=stored_stems_dir, stems=stems)
+        if stored_stems:
+            st.subheader("Latest split")
+            st.write("**Output folder:**", str(stored_stems_dir))
+
+            stems_bytes = read_stems(stems_dir=stored_stems_dir, stems=list(stored_stems.keys()))
+            zip_bytes = zip_stems(stems_dir=stored_stems_dir, stems=list(stored_stems.keys()))
+            track_name = stored_stems_dir.name
+
+            st.download_button(
+                "⬇️ Download all (ZIP)",
+                data=zip_bytes,
+                file_name=f"{track_name}_stems_{model}.zip",
+                mime="application/zip",
+            )
+
+            num_cols = min(4, len(stored_stems))
+            cols = st.columns(num_cols)
+            for idx, stem in enumerate(stored_stems.keys()):
+                with cols[idx % num_cols]:
+                    st.download_button(
+                        f"⬇️ {stem}.wav",
+                        data=stems_bytes[stem],
+                        file_name=f"{track_name}_{stem}.wav",
+                        mime="audio/wav",
+                        key=f"stored_{track_name}_{stem}",
+                    )
+
+            for stem in stored_stems.keys():
+                st.markdown(f"**{stem}**")
+                st.audio(stems_bytes[stem], format="audio/wav")
+
+            st.markdown("---")
 
     uploaded = st.file_uploader(
         "Upload audio",
@@ -555,12 +665,17 @@ def _render_chords_controls(stems_paths: dict[str, Path]) -> tuple[str, bool]:
     with cols[1]:
         st.write("")
         st.write("")
-        run_button = st.button("🎹 Predict chords", type="primary", use_container_width=True)
+        run_button = st.button("🎹 Predict chords", type="primary", width="stretch")
 
     return selected_stem, run_button
 
 
-def _maybe_run_chords_prediction(input_wav: Path, output_lab: Path, run_button: bool) -> None:
+def _maybe_run_chords_prediction(
+    input_wav: Path,
+    output_lab: Path,
+    backend_id: str,
+    run_button: bool,
+) -> None:
     """
     Run chord prediction if requested.
 
@@ -570,6 +685,8 @@ def _maybe_run_chords_prediction(input_wav: Path, output_lab: Path, run_button: 
         Selected stem wav path.
     output_lab : Path
         Output chords lab file path.
+    backend_id : str
+        Chord-detection backend id.
     run_button : bool
         Whether the button was clicked.
 
@@ -582,7 +699,9 @@ def _maybe_run_chords_prediction(input_wav: Path, output_lab: Path, run_button: 
 
     try:
         with st.spinner("Predicting chords..."):
-            predict_chords_for_stem(input_wav=input_wav, output_lab=output_lab)
+            predict_chords_for_stem(
+                input_wav=input_wav, output_lab=output_lab, backend_id=backend_id
+            )
         st.success("Chord prediction completed.")
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
         st.error(str(exc))
@@ -620,7 +739,7 @@ def _get_plot_config(duration_s: float) -> ChordsPlotConfig:
     return ChordsPlotConfig(start_s=0.0, end_s=float(duration_s))
 
 
-def _render_chords_plot(output_lab: Path, input_wav: Path) -> float | None:
+def _render_chords_plot(output_lab: Path, input_wav: Path) -> tuple[float | None, list]:
     """
     Render the Plotly visualization if chords are available.
 
@@ -638,17 +757,17 @@ def _render_chords_plot(output_lab: Path, input_wav: Path) -> float | None:
     """
     if not output_lab.exists():
         st.info("No chords detected yet. Click “Predict chords” to generate chords.lab.")
-        return None
+        return None, []
 
     try:
         segments = read_chords_lab(output_lab)
         times_s, mono, duration_s = load_waveform_for_plot(input_wav)
     except FileNotFoundError as exc:
         st.error(f"File not found: {exc}")
-        return None
+        return None, []
     except (OSError, RuntimeError, ValueError) as exc:
         st.error(f"Error loading data: {exc}")
-        return None
+        return None, []
 
     # Check if any chords were detected
     if not segments:
@@ -657,20 +776,21 @@ def _render_chords_plot(output_lab: Path, input_wav: Path) -> float | None:
             "This can happen if the stem is silent or contains only drums/bass. "
             "Try selecting a different stem (e.g., 'other' for harmonic instruments)."
         )
-        return float(duration_s)
+        return float(duration_s), segments
 
     config = _get_plot_config(duration_s=float(duration_s))
+    visible_segments = _segments_in_time_range(segments, config.start_s, config.end_s)
     fig = _build_chords_waveform_figure(
         times_s=times_s, mono=mono, segments=segments, config=config
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
-    return float(duration_s)
+    return float(duration_s), visible_segments
 
 
 def _render_playback_controls(input_wav: Path, duration_s: float) -> None:
     """
-    Render playback controls to listen to a short clip starting at a given time.
+    Render playback controls driven by the current visible time range.
 
     Parameters
     ----------
@@ -683,53 +803,39 @@ def _render_playback_controls(input_wav: Path, duration_s: float) -> None:
     -------
     None
     """
-    st.subheader("Playback")
-
-    # Read-only reference from the last zoom state.
     zoom_start = float(st.session_state.get(SESSION_KEY_ZOOM_START_S, 0.0))
     zoom_end = float(st.session_state.get(SESSION_KEY_ZOOM_END_S, float(duration_s)))
+    visible_range_duration = max(0.0, zoom_end - zoom_start)
+    is_full_track = zoom_start <= 0.0 and abs(zoom_end - float(duration_s)) < 0.1
 
-    col1, col2, col3 = st.columns([2, 2, 1])
-    with col1:
-        start_s = st.slider(
-            "Start (s)",
-            min_value=0.0,
-            max_value=float(duration_s),
-            value=float(min(max(zoom_start, 0.0), duration_s)),
-            step=0.1,
-        )
-
-    with col2:
-        clip_len = st.slider(
-            "Clip length (s)",
-            min_value=1.0,
-            max_value=30.0,
-            value=10.0,
-            step=1.0,
-        )
-
-    with col3:
-        st.write("")
-        st.write("")
-        play_clip = st.button("▶️ Play clip", type="secondary", use_container_width=True)
-
-    # Secondary quick action: play from zoom start without changing the slider manually.
-    play_zoom = st.button(
-        f"▶️ Play from zoom start ({zoom_start:.1f}s)",
-        type="secondary",
-        use_container_width=True,
-        disabled=zoom_end <= zoom_start,
+    st.caption(
+        "The visible time range drives both the chart and playback, "
+        "so there is only one selection to manage."
     )
 
-    if play_zoom:
-        start_s = zoom_start
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        if is_full_track:
+            st.caption(f"Current selection: full track ({duration_s:.1f}s)")
+        else:
+            st.caption(
+                f"Current selection: {zoom_start:.1f}s → {zoom_end:.1f}s "
+                f"({visible_range_duration:.1f}s)"
+            )
+    with col2:
+        play_selection = st.button(
+            "▶️ Play selection" if not is_full_track else "▶️ Play full track",
+            type="secondary",
+            width="stretch",
+            disabled=visible_range_duration <= 0.0,
+        )
 
-    if play_clip or play_zoom:
+    if play_selection:
         try:
             clip_bytes, clip_duration = extract_wav_clip_bytes(
                 wav_path=input_wav,
-                start_s=float(start_s),
-                duration_s=float(clip_len),
+                start_s=float(zoom_start),
+                duration_s=float(visible_range_duration),
             )
         except (FileNotFoundError, ValueError, OSError, RuntimeError) as exc:
             st.error(str(exc))
@@ -741,7 +847,7 @@ def _render_playback_controls(input_wav: Path, duration_s: float) -> None:
 
         st.session_state[SESSION_KEY_CLIP_BYTES] = clip_bytes
         st.session_state[SESSION_KEY_CLIP_LABEL] = (
-            f"{start_s:.1f}s → {start_s + clip_duration:.1f}s"
+            f"{zoom_start:.1f}s → {zoom_start + clip_duration:.1f}s"
         )
 
     clip = st.session_state.get(SESSION_KEY_CLIP_BYTES)
@@ -784,6 +890,104 @@ def _render_chords_results_expander(output_lab: Path) -> None:
         st.code(lab_content, language="text")
 
 
+def _render_chord_benchmark_section(input_wav: Path, benchmark_dir: Path) -> None:
+    """Render a lightweight benchmark UI for available chord backends."""
+    available_backends = list_chord_detection_backends()
+    backend_ids = [backend.backend_id for backend in available_backends]
+
+    with st.expander("Benchmark backends", expanded=False):
+        st.caption(
+            "This compares runtime and output consistency across backends. "
+            "Without reference annotations, it is not a ground-truth accuracy benchmark."
+        )
+
+        selected_backends = st.multiselect(
+            "Backends to benchmark",
+            backend_ids,
+            default=backend_ids,
+            format_func=lambda backend_id: get_chord_detection_backend(backend_id).label,
+        )
+
+        run_benchmark = st.button(
+            "Run benchmark",
+            type="secondary",
+            width="stretch",
+            disabled=not selected_backends,
+        )
+
+        if run_benchmark:
+            try:
+                with st.spinner("Running benchmark..."):
+                    results = benchmark_chord_detection(
+                        input_wav=input_wav,
+                        output_dir=benchmark_dir,
+                        backend_ids=selected_backends,
+                    )
+                st.session_state[SESSION_KEY_CHORD_BENCHMARK] = {
+                    "input_wav": str(input_wav),
+                    "results": [
+                        {
+                            "backend_id": result.backend_id,
+                            "label": result.label,
+                            "output_lab": str(result.output_lab) if result.output_lab else None,
+                            "runtime_s": result.runtime_s,
+                            "segment_count": result.segment_count,
+                            "unique_label_count": result.unique_label_count,
+                            "success": result.success,
+                            "error": result.error,
+                        }
+                        for result in results
+                    ],
+                }
+            except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+                st.error(str(exc))
+
+        benchmark_report = st.session_state.get(SESSION_KEY_CHORD_BENCHMARK)
+        if not benchmark_report or benchmark_report.get("input_wav") != str(input_wav):
+            return
+
+        benchmark_rows = benchmark_report["results"]
+        if not benchmark_rows:
+            return
+
+        st.table(
+            [
+                {
+                    "Backend": row["label"],
+                    "Status": "ok" if row["success"] else "failed",
+                    "Runtime (s)": f"{row['runtime_s']:.2f}",
+                    "Segments": row["segment_count"],
+                    "Unique labels": row["unique_label_count"],
+                    "Output": row["output_lab"] or "-",
+                }
+                for row in benchmark_rows
+            ]
+        )
+
+        failures = [row for row in benchmark_rows if not row["success"]]
+        for row in failures:
+            st.warning(f"{row['label']}: {row['error']}")
+
+        successful_rows = [row for row in benchmark_rows if row["success"] and row["output_lab"]]
+        if len(successful_rows) < 2:
+            return
+
+        st.caption("Cross-backend exact-label agreement on a 100 ms grid.")
+        for index, first_row in enumerate(successful_rows):
+            first_output = Path(first_row["output_lab"])
+            first_segments = read_chords_lab(first_output)
+            for second_row in successful_rows[index + 1 :]:
+                second_output = Path(second_row["output_lab"])
+                second_segments = read_chords_lab(second_output)
+                agreement = compute_chord_label_agreement(first_segments, second_segments)
+                if agreement is None:
+                    st.write(f"{first_row['label']} vs {second_row['label']}: n/a")
+                else:
+                    st.write(
+                        f"{first_row['label']} vs {second_row['label']}: {agreement:.1%} agreement"
+                    )
+
+
 def _render_chords_tab() -> None:
     """
     Render the chord detection tab.
@@ -803,18 +1007,31 @@ def _render_chords_tab() -> None:
         return
 
     selected_stem, run_button = _render_chords_controls(stems_paths=stems_paths)
+    selected_backend = st.session_state.get(SESSION_KEY_CHORD_BACKEND, "chordmini_chordnet")
 
     input_wav = stems_paths[selected_stem]
-    output_lab = stems_dir / "chords.lab"
+    output_lab = stems_dir / f"chords_{selected_backend}.lab"
+    benchmark_dir = stems_dir / "chord_benchmark"
 
-    _maybe_run_chords_prediction(input_wav=input_wav, output_lab=output_lab, run_button=run_button)
+    _maybe_run_chords_prediction(
+        input_wav=input_wav,
+        output_lab=output_lab,
+        backend_id=selected_backend,
+        run_button=run_button,
+    )
 
-    audio_duration = _render_chords_plot(output_lab=output_lab, input_wav=input_wav)
-    if audio_duration is None:
-        return
+    _render_chord_benchmark_section(input_wav=input_wav, benchmark_dir=benchmark_dir)
 
-    _render_playback_controls(input_wav=input_wav, duration_s=audio_duration)
-    _render_chords_results_expander(output_lab=output_lab)
+    with st.container(border=True):
+        st.subheader("Audio inspector")
+
+        audio_duration, segments = _render_chords_plot(output_lab=output_lab, input_wav=input_wav)
+        if audio_duration is None:
+            return
+
+        _render_playback_controls(input_wav=input_wav, duration_s=audio_duration)
+        _render_detected_chord_chart(segments)
+        _render_chords_results_expander(output_lab=output_lab)
 
 
 # =============================================================================
@@ -1059,7 +1276,7 @@ def _render_live_harmony_tab() -> None:
         refresh_col, status_col = st.columns([1, 2])
 
         with refresh_col:
-            if st.button("🔄 Refresh devices", use_container_width=True):
+            if st.button("🔄 Refresh devices", width="stretch"):
                 st.rerun()
 
         with status_col:
@@ -1126,11 +1343,11 @@ def _render_live_harmony_tab() -> None:
 
             with col2:
                 if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
-                    if st.button("⏹️ Stop", type="secondary", use_container_width=True):
+                    if st.button("⏹️ Stop", type="secondary", width="stretch"):
                         _stop_midi_listener()
                         st.success("MIDI listener stopped")
                 else:
-                    if st.button("▶️ Start", type="primary", use_container_width=True):
+                    if st.button("▶️ Start", type="primary", width="stretch"):
                         _start_midi_listener(selected_device)
                         st.success(f"Listening to {selected_device}...")
 
@@ -1255,7 +1472,7 @@ def _render_251_trainer(current_notes: list[str]) -> None:
             help="Advance to the next chord when the current target voicing is matched exactly.",
         )
     with col4:
-        if st.button("↺ Restart", use_container_width=True):
+        if st.button("↺ Restart", width="stretch"):
             st.session_state[SESSION_KEY_251_STEP] = 0
             st.session_state[SESSION_KEY_251_CHAIN_INDEX] = 0
             st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
@@ -1308,14 +1525,14 @@ def _render_251_trainer(current_notes: list[str]) -> None:
 
     nav1, nav2, nav3 = st.columns([1, 1, 2])
     with nav1:
-        if st.button("← Previous", use_container_width=True, disabled=current_step == 0):
+        if st.button("← Previous", width="stretch", disabled=current_step == 0):
             st.session_state[SESSION_KEY_251_STEP] = current_step - 1
             st.session_state[SESSION_KEY_251_LAST_MATCHED_STEP] = None
             st.rerun()
     with nav2:
         if st.button(
             "Next →",
-            use_container_width=True,
+            width="stretch",
             disabled=chain_mode or current_step >= len(exercise.steps) - 1,
         ):
             st.session_state[SESSION_KEY_251_STEP] = current_step + 1
@@ -1429,13 +1646,13 @@ def _render_chord_sequence_editor() -> None:
         )
 
     with col2:
-        if st.button("➕ Add", use_container_width=True):
+        if st.button("➕ Add", width="stretch"):
             if new_chord:
                 sequence.append(new_chord)
                 st.session_state[SESSION_KEY_CHORD_SEQ] = sequence
 
     with col3:
-        if st.button("🗑️ Clear", use_container_width=True):
+        if st.button("🗑️ Clear", width="stretch"):
             st.session_state[SESSION_KEY_CHORD_SEQ] = []
 
     # Display sequence
@@ -1444,7 +1661,7 @@ def _render_chord_sequence_editor() -> None:
         cols = st.columns(min(len(sequence), 6))
         for idx, chord in enumerate(sequence):
             with cols[idx % 6]:
-                if st.button(f"{chord} ❌", key=f"chord_{idx}", use_container_width=True):
+                if st.button(f"{chord} ❌", key=f"chord_{idx}", width="stretch"):
                     # Remove this chord
                     sequence.pop(idx)
                     st.session_state[SESSION_KEY_CHORD_SEQ] = sequence
@@ -1469,7 +1686,7 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     _init_session_state()
-    selected_model, active_workspace = _render_sidebar()
+    selected_model, active_workspace, _selected_backend = _render_sidebar()
 
     if active_workspace == "Audio Analysis":
         st.caption("Load a track, isolate its stems, and explore its chord progression.")

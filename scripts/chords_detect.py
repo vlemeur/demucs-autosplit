@@ -1,9 +1,9 @@
 import argparse
 from pathlib import Path
 
-from demucs_audiosplit import logger
-from demucs_audiosplit.audiosplit import DEFAULT_MODEL, DEMUCS_MODELS, _get_expected_stems
-from demucs_audiosplit.chords_predict import predict_chords_from_wave
+from audio_analysis import logger
+from audio_analysis.chord_detection import list_chord_detection_backends, predict_chords_from_wave
+from audio_analysis.separation import DEFAULT_MODEL, DEMUCS_MODELS, _get_expected_stems
 
 
 def find_stems_dir(output_root: Path, track_name: str, model: str) -> Path | None:
@@ -45,8 +45,9 @@ def main() -> None:
         --track TRACK     Track name (without extension)
         --stem STEM       Stem name (e.g., 'other', 'vocals', 'guitar')
         --model MODEL     Separation model used for separation (default: htdemucs)
-        --method METHOD   Chord detection method: 'madmom' (default) or 'chordino'
+        --method METHOD   Chord detection backend (default: madmom)
     """
+    backend_ids = [backend.backend_id for backend in list_chord_detection_backends()]
     parser = argparse.ArgumentParser(
         description="Detect chords from a stem WAV file",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -81,8 +82,8 @@ def main() -> None:
         "-m",
         type=str,
         default="madmom",
-        choices=["madmom"],
-        help="Chord detection method (currently only 'madmom' is supported)",
+        choices=backend_ids,
+        help=f"Chord detection backend. Options: {', '.join(backend_ids)}",
     )
 
     args = parser.parse_args()
@@ -110,10 +111,13 @@ def main() -> None:
         )
         return
 
-    output_lab = stems_dir / "chords.lab"
+    output_lab = stems_dir / f"chords_{args.method}.lab"
+    bass_wav = stems_dir / "bass.wav"
+    if not bass_wav.exists() or bass_wav.resolve() == input_wav.resolve():
+        bass_wav = None
 
     logger.info("🎵 Detecting chords from: %s", input_wav.name)
-    predict_chords_from_wave(input_wav, output_lab, method=args.method)
+    predict_chords_from_wave(input_wav, output_lab, method=args.method, bass_wav=bass_wav)
     logger.info("✅ Chord detection complete. Output: %s", output_lab)
 
 

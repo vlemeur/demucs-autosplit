@@ -2,8 +2,8 @@ from pathlib import Path
 
 import soundfile as sf
 
-from demucs_audiosplit import logger
-from demucs_audiosplit.filters import apply_simple_filters
+from audio_analysis import logger
+from audio_analysis.filters import apply_simple_filters
 
 # Available Demucs v4 models (Hybrid Transformer)
 # These are the state-of-the-art models with the best quality
@@ -14,7 +14,7 @@ DEMUCS_MODELS: tuple[str, ...] = (
 )
 
 # Default model
-DEFAULT_MODEL: str = "htdemucs"
+DEFAULT_MODEL: str = "htdemucs_ft"
 
 # Maximum segment length for Hybrid Transformer models (in seconds)
 # These models cannot handle segments longer than 7.8 seconds

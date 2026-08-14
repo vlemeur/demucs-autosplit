@@ -1,8 +1,8 @@
 import argparse
 from pathlib import Path
 
-from demucs_audiosplit import logger
-from demucs_audiosplit.audiosplit import DEFAULT_MODEL, DEMUCS_MODELS, find_audio_files, run_demucs
+from audio_analysis import logger
+from audio_analysis.separation import DEFAULT_MODEL, DEMUCS_MODELS, find_audio_files, run_demucs
 
 AUDIO_DIR = Path("audio")
 OUTPUT_DIR = Path("outputs")
