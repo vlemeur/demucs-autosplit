@@ -11,19 +11,19 @@ TRY_FILTERS_OTHERS = False
 
 def main() -> None:
     """
-    Batch process all audio files in AUDIO_DIR using Demucs.
+    Batch process all audio files in AUDIO_DIR using demucs-infer.
 
     Usage:
         python scripts/split_track.py [--model MODEL] [--filter-others]
 
     Arguments:
-        --model MODEL       Demucs model to use (default: htdemucs)
+        --model MODEL       Separation model to use (default: htdemucs)
         --filter-others    Apply extra filters to the 'other' stem (default: False)
         --segment SEGMENT   Segment length in seconds for GPU processing (default: 10)
         --device DEVICE     Device to use: cpu, cuda, or auto (default: auto)
     """
     parser = argparse.ArgumentParser(
-        description="Batch process audio files with Demucs",
+        description="Batch process audio files with demucs-infer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -33,7 +33,7 @@ def main() -> None:
         default=DEFAULT_MODEL,
         choices=DEMUCS_MODELS,
         help=(
-            f"Demucs v4 model to use. Options: {', '.join(DEMUCS_MODELS)}. "
+            f"Demucs-family model to use. Options: {', '.join(DEMUCS_MODELS)}. "
             "htdemucs_ft is 4x slower but better quality. "
             "htdemucs_6s separates into 6 stems (includes guitar and piano)."
         ),

@@ -386,7 +386,7 @@ def _render_split_tab(model: str) -> None:
     Parameters
     ----------
     model : str
-        The Demucs model to use for separation.
+        The Demucs-family model to use for separation.
 
     Returns
     -------
@@ -417,7 +417,7 @@ def _render_split_tab(model: str) -> None:
     st.write("**Model:**", model)
 
     if st.button("🚀 Split track", type="primary"):
-        with st.status("Running Demucs…", expanded=True) as status:
+        with st.status("Running stem separation…", expanded=True) as status:
             st.write(
                 f"Splitting with model {model}… this can take a while depending on your CPU/GPU."
             )
@@ -435,7 +435,7 @@ def _render_split_tab(model: str) -> None:
             if stems_dir is None:
                 status.update(label="Failed", state="error", expanded=True)
                 st.error(
-                    f"Demucs finished, but stems were not found for model {model}. "
+                    f"Stem separation finished, but stems were not found for model {model}. "
                     "Inspect .streamlit_workdir/outputs to verify the output layout."
                 )
                 return
@@ -447,8 +447,6 @@ def _render_split_tab(model: str) -> None:
 
         # Store stems_dir for the Chord detection tab.
         st.session_state[SESSION_KEY_STEMS_DIR] = str(stems_dir)
-        # Store the model for chord detection
-        st.session_state["selected_model"] = model
 
         stems_bytes = read_stems(stems_dir=stems_dir, stems=stems)
         zip_bytes = zip_stems(stems_dir=stems_dir, stems=stems)

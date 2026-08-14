@@ -44,7 +44,7 @@ def main() -> None:
     Arguments:
         --track TRACK     Track name (without extension)
         --stem STEM       Stem name (e.g., 'other', 'vocals', 'guitar')
-        --model MODEL     Demucs model used for separation (default: htdemucs)
+        --model MODEL     Separation model used for separation (default: htdemucs)
         --method METHOD   Chord detection method: 'madmom' (default) or 'chordino'
     """
     parser = argparse.ArgumentParser(
@@ -72,7 +72,7 @@ def main() -> None:
         default=DEFAULT_MODEL,
         choices=DEMUCS_MODELS,
         help=(
-            f"Demucs v4 model used. Options: {', '.join(DEMUCS_MODELS)}. "
+            f"Demucs-family model used. Options: {', '.join(DEMUCS_MODELS)}. "
             "Must match the model used for stem separation."
         ),
     )
