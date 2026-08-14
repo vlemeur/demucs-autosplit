@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from demucs_audiosplit.audiosplit import DEFAULT_MODEL, DEMUCS_MODELS
-from midi import list_midi_devices
+from midi import query_midi_devices
 from midi.chord_detector import ChordDetector
 from midi.handler import MIDI_NOTE_TO_NAME
 from midi.trainer import (
@@ -57,6 +57,8 @@ SESSION_KEY_CLIP_BYTES: str = "clip_bytes"
 SESSION_KEY_CLIP_LABEL: str = "clip_label"
 SESSION_KEY_ZOOM_START_S: str = "zoom_start_s"
 SESSION_KEY_ZOOM_END_S: str = "zoom_end_s"
+SESSION_KEY_SELECTED_MODEL: str = "selected_model"
+SESSION_KEY_ACTIVE_WORKSPACE: str = "active_workspace"
 
 # Live Harmony session state keys
 SESSION_KEY_LIVE_NOTES: str = "live_notes"
@@ -78,6 +80,7 @@ SESSION_KEY_251_LAST_MATCHED_STEP: str = "trainer_251_last_matched_step"
 SESSION_KEY_251_CHAIN_MODE: str = "trainer_251_chain_mode"
 SESSION_KEY_251_CHAIN_KEYS: str = "trainer_251_chain_keys"
 SESSION_KEY_251_CHAIN_INDEX: str = "trainer_251_chain_index"
+SESSION_KEY_MIDI_SELECTED_DEVICE: str = "live_selected_device"
 LIVE_REFRESH_INTERVAL_S: float = 0.2
 VISIBLE_251_EXERCISES = build_visible_exercises()
 
@@ -166,38 +169,60 @@ def _init_session_state() -> None:
         st.session_state[SESSION_KEY_ZOOM_START_S] = 0.0
     if SESSION_KEY_ZOOM_END_S not in st.session_state:
         st.session_state[SESSION_KEY_ZOOM_END_S] = 0.0
+    if SESSION_KEY_SELECTED_MODEL not in st.session_state:
+        st.session_state[SESSION_KEY_SELECTED_MODEL] = DEFAULT_MODEL
+    if SESSION_KEY_ACTIVE_WORKSPACE not in st.session_state:
+        st.session_state[SESSION_KEY_ACTIVE_WORKSPACE] = "Audio Analysis"
+    elif st.session_state[SESSION_KEY_ACTIVE_WORKSPACE] == "Analyse audio":
+        st.session_state[SESSION_KEY_ACTIVE_WORKSPACE] = "Audio Analysis"
 
 
-def _render_sidebar() -> str:
+def _render_sidebar() -> tuple[str, str]:
     """
     Render the sidebar controls.
 
     Returns
     -------
-    str
-        The selected model.
+    tuple[str, str]
+        The selected model and active workspace.
     """
     with st.sidebar:
-        st.header("Settings")
-
-        # Model selection
-        st.subheader("Demucs Model")
-        model_tooltip = {
-            "htdemucs": "Default Hybrid Transformer model - 9.0 dB SDR, best balance",
-            "htdemucs_ft": "Fine-tuned Hybrid Transformer - 9.2 dB SDR, 4x slower",
-            "htdemucs_6s": "6-source model: drums, bass, vocals, other, guitar, piano",
-        }
-
-        selected_model = st.selectbox(
-            "Model",
-            options=DEMUCS_MODELS,
-            index=DEMUCS_MODELS.index(DEFAULT_MODEL),
-            help="\n".join(
-                f"**{m}**: {model_tooltip.get(m, 'No description')}" for m in DEMUCS_MODELS
-            ),
+        st.header("Navigation")
+        active_workspace = st.radio(
+            "Workspace",
+            options=("Audio Analysis", "Live Harmony"),
+            key=SESSION_KEY_ACTIVE_WORKSPACE,
+            label_visibility="collapsed",
         )
 
+        if active_workspace == "Audio Analysis":
+            st.caption("Upload a track, separate its stems, then analyze the chord progression.")
+        else:
+            st.caption("Play your MIDI keyboard to see notes and chords update in real time.")
+
         st.markdown("---")
+
+        selected_model = st.session_state.get(SESSION_KEY_SELECTED_MODEL, DEFAULT_MODEL)
+
+        if active_workspace == "Audio Analysis":
+            st.header("Settings")
+            model_tooltip = {
+                "htdemucs": "Default Hybrid Transformer model - 9.0 dB SDR, best balance",
+                "htdemucs_ft": "Fine-tuned Hybrid Transformer - 9.2 dB SDR, 4x slower",
+                "htdemucs_6s": "6-source model: drums, bass, vocals, other, guitar, piano",
+            }
+
+            selected_model = st.selectbox(
+                "Demucs Model",
+                options=DEMUCS_MODELS,
+                index=DEMUCS_MODELS.index(selected_model),
+                key=SESSION_KEY_SELECTED_MODEL,
+                help="\n".join(
+                    f"**{m}**: {model_tooltip.get(m, 'No description')}" for m in DEMUCS_MODELS
+                ),
+            )
+
+            st.markdown("---")
 
         if st.button("🧹 Clear workspace"):
             clear_workspace(WORK_DIR)
@@ -206,7 +231,7 @@ def _render_sidebar() -> str:
             st.session_state[SESSION_KEY_CLIP_LABEL] = None
             st.success("Workspace cleared.")
 
-    return selected_model
+    return selected_model, active_workspace
 
 
 def _simplify_chord_label(label: str) -> str:
@@ -774,7 +799,7 @@ def _render_chords_tab() -> None:
         return
 
     # Get the model from session state
-    model = st.session_state.get("selected_model", DEFAULT_MODEL)
+    model = st.session_state.get(SESSION_KEY_SELECTED_MODEL, DEFAULT_MODEL)
     stems_paths = _get_stems_paths(stems_dir=stems_dir, model=model)
     if stems_paths is None:
         return
@@ -845,6 +870,8 @@ def _init_live_harmony_state() -> None:
         st.session_state[SESSION_KEY_251_CHAIN_KEYS] = [VISIBLE_MAJOR_KEYS[0]]
     if SESSION_KEY_251_CHAIN_INDEX not in st.session_state:
         st.session_state[SESSION_KEY_251_CHAIN_INDEX] = 0
+    if SESSION_KEY_MIDI_SELECTED_DEVICE not in st.session_state:
+        st.session_state[SESSION_KEY_MIDI_SELECTED_DEVICE] = None
 
 
 def _reset_live_harmony_session_values() -> None:
@@ -1015,110 +1042,169 @@ def _render_live_harmony_tab() -> None:
         """
     )
 
-    # Device selection
-    st.subheader("🎛️ MIDI Settings")
+    settings_tab, detection_tab, trainer_tab = st.tabs(
+        ["MIDI Settings", "Chord Detection", "Jazz Trainer"]
+    )
 
-    devices = list_midi_devices()
-
-    if not devices:
-        st.warning(
-            "No MIDI input devices found. "
-            "Make sure your keyboard is connected and the driver is installed."
-        )
-        st.markdown(
-            """
-            **Troubleshooting:**
-            - On macOS: Check Audio MIDI Setup app to verify your device is connected
-            - Make sure your keyboard is set to send MIDI (not just audio)
-            - Try closing and reopening other MIDI applications
-            """
-        )
-        return
-
-    col1, col2, col3 = st.columns([2, 1, 1])
-
-    with col1:
-        selected_device = st.selectbox(
-            "Select MIDI Input Device",
-            devices,
-            index=0,
-            help="Choose your MIDI keyboard or controller",
-        )
-
-    with col2:
-        if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
-            if st.button("⏹️ Stop", type="secondary", use_container_width=True):
-                _stop_midi_listener()
-                st.success("MIDI listener stopped")
+    midi_query = query_midi_devices()
+    devices = midi_query.devices
+    selected_device_name = st.session_state.get(SESSION_KEY_MIDI_SELECTED_DEVICE)
+    if selected_device_name not in devices:
+        if devices:
+            selected_device_name = devices[0]
+            st.session_state[SESSION_KEY_MIDI_SELECTED_DEVICE] = selected_device_name
         else:
-            if st.button("▶️ Start", type="primary", use_container_width=True):
-                _start_midi_listener(selected_device)
-                st.success(f"Listening to {selected_device}...")
+            selected_device_name = None
 
-    with col3:
-        show_alts = st.toggle("Show alternatives", value=False)
+    with settings_tab:
+        st.subheader("🎛️ MIDI Settings")
+        refresh_col, status_col = st.columns([1, 2])
 
-    st.markdown("---")
+        with refresh_col:
+            if st.button("🔄 Refresh devices", use_container_width=True):
+                st.rerun()
 
-    # Live detection display
-    st.subheader("🎵 Live Detection")
+        with status_col:
+            if devices:
+                st.caption(f"{len(devices)} MIDI input device(s) detected.")
+            else:
+                st.caption("No MIDI input device detected for now.")
+
+        if not devices:
+            if midi_query.error:
+                st.error("Unable to query MIDI input devices from the current app environment.")
+                st.code(
+                    "\n".join(
+                        [
+                            f"Python: {midi_query.python_executable}",
+                            f"Mido backend: {midi_query.backend}",
+                            f"Error: {midi_query.error}",
+                        ]
+                    ),
+                    language="text",
+                )
+                st.info(
+                    "The debug script and Streamlit are probably not running in the same "
+                    "Python environment. Launch the app with `uv run streamlit run src/ui.py` "
+                    "if your MIDI debug script works with `uv run python ...`."
+                )
+            else:
+                st.warning(
+                    "No MIDI input devices found. "
+                    "Make sure your keyboard is connected and the driver is installed."
+                )
+            st.markdown(
+                """
+                **Troubleshooting:**
+                - On macOS: Check Audio MIDI Setup app to verify your device is connected
+                - Make sure your keyboard is set to send MIDI (not just audio)
+                - Try closing and reopening other MIDI applications
+                - Launch Streamlit from the same environment as the MIDI debug script
+                """
+            )
+        else:
+            with st.expander("MIDI diagnostics", expanded=False):
+                st.code(
+                    "\n".join(
+                        [
+                            f"Python: {midi_query.python_executable}",
+                            f"Mido backend: {midi_query.backend}",
+                            f"Detected devices: {len(devices)}",
+                        ]
+                    ),
+                    language="text",
+                )
+
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                selected_device = st.selectbox(
+                    "Select MIDI Input Device",
+                    devices,
+                    index=devices.index(selected_device_name),
+                    key=SESSION_KEY_MIDI_SELECTED_DEVICE,
+                    help="Choose your MIDI keyboard or controller",
+                )
+
+            with col2:
+                if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
+                    if st.button("⏹️ Stop", type="secondary", use_container_width=True):
+                        _stop_midi_listener()
+                        st.success("MIDI listener stopped")
+                else:
+                    if st.button("▶️ Start", type="primary", use_container_width=True):
+                        _start_midi_listener(selected_device)
+                        st.success(f"Listening to {selected_device}...")
 
     live_error = st.session_state.get(SESSION_KEY_LIVE_ERROR)
-    if live_error:
-        st.error(live_error)
-
-    if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
-        st.caption(f"Listening to `{selected_device}`...")
-
     current_notes = st.session_state.get(SESSION_KEY_LIVE_NOTES, [])
     current_chord = st.session_state.get(SESSION_KEY_LIVE_CHORD, None)
     current_alts = st.session_state.get(SESSION_KEY_LIVE_CHORD_ALTS, [])
     confidence = st.session_state.get(SESSION_KEY_LIVE_CONFIDENCE, 0.0)
 
-    _render_251_trainer(current_notes=current_notes)
+    with detection_tab:
+        st.subheader("🎵 Chord Detection")
+        show_alts = st.toggle("Show alternatives", value=False)
 
-    # Display in columns
-    col1, col2 = st.columns([2, 1])
+        if not devices:
+            st.info("Connect and refresh a MIDI input device from the MIDI Settings tab.")
+        else:
+            if live_error:
+                st.error(live_error)
 
-    with col1:
-        if current_notes:
-            st.markdown("**Current Notes:**")
-            # Group notes by octave for better readability
-            notes_by_octave: dict[str, list[str]] = {}
-            for note in current_notes:
-                if len(note) > 1 and note[-1].isdigit():
-                    octave = note[-1]
-                    base = note[:-1]
+            if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
+                st.caption(
+                    f"Listening to `{st.session_state[SESSION_KEY_MIDI_SELECTED_DEVICE]}`..."
+                )
+
+            # Display in columns
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                if current_notes:
+                    st.markdown("**Current Notes:**")
+                    # Group notes by octave for better readability
+                    notes_by_octave: dict[str, list[str]] = {}
+                    for note in current_notes:
+                        if len(note) > 1 and note[-1].isdigit():
+                            octave = note[-1]
+                            base = note[:-1]
+                        else:
+                            octave = "?"
+                            base = note
+                        if octave not in notes_by_octave:
+                            notes_by_octave[octave] = []
+                        notes_by_octave[octave].append(base)
+
+                    for octave in sorted(notes_by_octave.keys()):
+                        notes = sorted(notes_by_octave[octave])
+                        st.markdown(f"- **Octave {octave}:** {', '.join(notes)}")
                 else:
-                    octave = "?"
-                    base = note
-                if octave not in notes_by_octave:
-                    notes_by_octave[octave] = []
-                notes_by_octave[octave].append(base)
+                    st.info("No notes being played. Play something on your keyboard!")
 
-            for octave in sorted(notes_by_octave.keys()):
-                notes = sorted(notes_by_octave[octave])
-                st.markdown(f"- **Octave {octave}:** {', '.join(notes)}")
+            with col2:
+                if current_chord:
+                    st.success(f"**Detected Chord:** {current_chord}")
+                    st.caption(f"Confidence: {confidence:.1%}")
+                else:
+                    if current_notes:
+                        st.warning("Notes detected but no chord recognized")
+
+            if show_alts and current_alts:
+                st.markdown("**Alternative Chords:**")
+                for alt in current_alts[:5]:
+                    st.markdown(f"- {alt}")
+
+            st.markdown("---")
+            _render_chord_sequence_editor()
+
+    with trainer_tab:
+        st.subheader("🎼 Jazz Trainer")
+        if not devices:
+            st.info("Connect and refresh a MIDI input device from the MIDI Settings tab.")
         else:
-            st.info("No notes being played. Play something on your keyboard!")
-
-    with col2:
-        if current_chord:
-            st.success(f"**Detected Chord:** {current_chord}")
-            st.caption(f"Confidence: {confidence:.1%}")
-        else:
-            if current_notes:
-                st.warning("Notes detected but no chord recognized")
-
-    if show_alts and current_alts:
-        st.markdown("**Alternative Chords:**")
-        for alt in current_alts[:5]:  # Show top 5 alternatives
-            st.markdown(f"- {alt}")
-
-    st.markdown("---")
-
-    # Chord sequence editor
-    _render_chord_sequence_editor()
+            if live_error:
+                st.error(live_error)
+            _render_251_trainer(current_notes=current_notes)
 
     if st.session_state.get(SESSION_KEY_LIVE_RUNNING, False):
         time.sleep(LIVE_REFRESH_INTERVAL_S)
@@ -1384,16 +1470,17 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     _init_session_state()
-    selected_model = _render_sidebar()
+    selected_model, active_workspace = _render_sidebar()
 
-    tab_split, tab_chords, tab_live = st.tabs(
-        ["Stem separation", "Chord detection", "Live Harmony"]
-    )
-    with tab_split:
-        _render_split_tab(model=selected_model)
-    with tab_chords:
-        _render_chords_tab()
-    with tab_live:
+    if active_workspace == "Audio Analysis":
+        st.caption("Load a track, isolate its stems, and explore its chord progression.")
+        tab_split, tab_chords = st.tabs(["Stem separation", "Chord detection"])
+        with tab_split:
+            _render_split_tab(model=selected_model)
+        with tab_chords:
+            _render_chords_tab()
+    else:
+        st.caption("Connect a MIDI keyboard to view live notes, chords, and exercises.")
         _render_live_harmony_tab()
 
 
